@@ -73,15 +73,6 @@ The name reflects both the mystical allure of programming challenges and the pow
 
 ## Usage
 
-1. Clone the repository:
-   git clone <repository-url>
-   cd <repository-name>
-
-2. Run the demo project:
-   cargo run --release -- run-asm demo.hasm
-
-You can also use the provided assembler to produce bytecode by running `cargo run -p hasm <input> <output>`
-
 ---
 ## Performance Tracking
 The CPU tracks performance using the following stats:
