@@ -40,12 +40,6 @@ enum Action {
     Run {
         path: PathBuf,
     },
-    RunAsm {
-        path: PathBuf,
-    },
-    RunBf {
-        path: PathBuf,
-    },
 }
 
 #[derive(Debug)]
@@ -180,38 +174,6 @@ async fn main() -> anyhow::Result<()> {
                 &file.data,
                 memory_size,
                 file.header.entrypoint,
-                register_count,
-                verbose,
-                print_memory_access,
-                show_cpu_state,
-                addresses_as_integers,
-            )?;
-        }
-
-        Action::RunAsm { path } => {
-            let program = std::fs::read_to_string(path)?;
-            let mut assembler = hecate_assembler::Assembler::new();
-            let memory = assembler.assemble_program(&program)?;
-
-            run(
-                &memory.data,
-                memory_size,
-                memory.header.entrypoint,
-                register_count,
-                verbose,
-                print_memory_access,
-                show_cpu_state,
-                addresses_as_integers,
-            )?;
-        }
-        Action::RunBf { path } => {
-            let program = std::fs::read_to_string(path)?;
-            let memory = hecate_bf::compile_program(&program)?;
-
-            run(
-                &memory.data,
-                memory_size,
-                memory.header.entrypoint,
                 register_count,
                 verbose,
                 print_memory_access,
