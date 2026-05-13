@@ -1,7 +1,36 @@
 # Hecate Virtual Machine
 
+## MVP Status (RISC-V)
+
+The current branch contains an MVP RISC-V runner based on `rvsim`.
+
+- Input: RV32 ELF executable
+- Execution core: `rvsim` interpreter
+- Hecate additions: cache-aware memory tracking and cycle score reporting
+
+Quick run:
+
+```bash
+cargo run -- run /path/to/program.elf
+```
+
+Useful options:
+
+```bash
+cargo run -- run /path/to/program.elf --dump-registers
+cargo run -- run /path/to/program.elf --max-instructions 1000000
+cargo run -- run /path/to/program.elf --cache-line-size 64 --l1-size 32768 --l2-size 262144 --l3-size 8388608
+```
+
+One-command smoke test (build + run a tiny RV32 sample):
+
+```bash
+./scripts/run_sample_rv32.sh
+```
+
 This project provides an implementation of the Hecate virtual machine.
 
+- [MVP Status (RISC-V)](#mvp-status-risc-v)
 - [Where does the name come from?](#where-does-the-name-come-from)
 - [ATTENTION](#attention)
 - [Features](#features)
