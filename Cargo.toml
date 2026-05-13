@@ -10,6 +10,8 @@ repository = "https://github.com/hecate-vm/hecate-vm"
 anyhow = "1.0.95"
 clap = { version = "4.5.22", features = ["derive"] }
 rvsim = { git = "https://github.com/hecate-vm/rvsim", version = "0.2.2" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [features]
 default = []
