@@ -1,0 +1,15 @@
+[build]
+target = "riscv32im-hecate-none-elf"
+
+[env]
+RUST_TARGET_PATH = { value = "../../../runtime/rust/targets", relative = true }
+
+[target.riscv32im-hecate-none-elf]
+rustflags = [
+    "-C",
+    "link-arg=-nostdlib",
+    "-C",
+    "link-arg=-Wl,-e,_start",
+    "-C",
+    "link-arg=-Wl,-Ttext=0x10000000",
+]

@@ -1,0 +1,13 @@
+[package]
+name = "rust_hello"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hecate = { path = "../../runtime/rust/hecate" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

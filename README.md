@@ -90,6 +90,19 @@ cmake --build build/examples --target hello_world_rv32
 cargo run -- run build/examples/hello_world_rv32.elf
 ```
 
+Rust demo build (Cargo cross-compile):
+
+```bash
+rustup target add riscv32im-unknown-none-elf
+cargo build --manifest-path examples/rust_hello/Cargo.toml --release --target riscv32im-unknown-none-elf
+cargo run -- run examples/rust_hello/target/riscv32im-unknown-none-elf/release/rust_hello
+```
+
+Rust runtime helper crate:
+
+- `runtime/rust/hecate_runtime/` (no_std helpers for write/exit + print macros)
+- `examples/rust_hello/` (minimal no_std + no_main RV32 example)
+
 If you have GCC cross-compilers installed, you can use one of these instead:
 
 - `runtime/cmake/toolchains/riscv32-none-elf-gcc.cmake`

@@ -1,4 +1,5 @@
 /target
+examples/rust_hello/target
 log.txt
 out.bin
 out.raw

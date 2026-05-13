@@ -1,0 +1,11 @@
+[package]
+name = "hecate_runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal no_std runtime helpers for Hecate RV32 programs"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
