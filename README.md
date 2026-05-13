@@ -58,7 +58,28 @@ Useful options:
 cargo run -- run /path/to/program.elf --dump-registers
 cargo run -- run /path/to/program.elf --max-instructions 1000000
 cargo run -- run /path/to/program.elf --cache-line-size 64 --l1-size 32768 --l2-size 262144 --l3-size 8388608
-cargo run -- run /path/to/program.elf --default-syscall-score 1 --syscall-score 64=8 --syscall-score 93=2
+cargo run -- run /path/to/program.elf --config /path/to/hecate.toml
+```
+
+The runtime always loads built-in defaults from `src/default.toml` and merges them with the file passed through `--config`.
+Only the keys you provide need to be overridden.
+
+Example config:
+
+```toml
+default_syscall_cycles = 500
+io_cycles_per_byte = 20
+
+[latency]
+l1 = 3
+l2 = 11
+l3 = 50
+memory = 125
+store = 1
+
+[syscall_cycles]
+64 = 500
+93 = 0
 ```
 
 Manual CMake demo build:
@@ -95,11 +116,16 @@ hecate_runtime_link(my_program)
 ## Performance Tracking
 The CPU tracks performance using the following stats:
 
-| Stat                          | Description                                                                                                                                         |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cycles                        | Cumulative score based on average number of cycles[^1]. This includes cycle count for all executed instructions as well as for every memory access. |
-| Memory Access Count           | The total amount memory is requested from an address. This includes values that are already cached.                                                 |
-| Cache hits (L1D, L1I, L2, L3) | How often each cache was hit.                                                                                                                       |
+| Stat                          | Description                                                                                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cycles                        | Total charged cycles[^1]. This includes retired instructions, memory hierarchy costs, configured syscall costs, and per-byte I/O costs for writes to stdout/stderr. |
+| Syscall cycles contribution   | Total cycles charged to syscalls, including variable per-byte I/O cost where applicable.                                                                            |
+| I/O cycles contribution       | The subset of syscall cycles added by `io_cycles_per_byte` during writes to stdout/stderr.                                                                          |
+| IO Bytes Written              | Number of bytes written through syscall `64` to stdout/stderr.                                                                                                      |
+| Memory Access Count           | The total amount memory is requested from an address. This includes values that are already cached.                                                                 |
+| Cache hits (L1D, L1I, L2, L3) | How often each cache was hit.                                                                                                                                       |
+
+When syscall activity is present, the VM also prints a per-syscall breakdown with call count, configured base cycles, any variable cycles, and the final subtotal charged for that syscall.
 
 ---
 
