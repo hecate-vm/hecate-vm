@@ -20,6 +20,7 @@ Useful options:
 cargo run -- run /path/to/program.elf --dump-registers
 cargo run -- run /path/to/program.elf --max-instructions 1000000
 cargo run -- run /path/to/program.elf --cache-line-size 64 --l1-size 32768 --l2-size 262144 --l3-size 8388608
+cargo run -- run /path/to/program.elf --default-syscall-score 1 --syscall-score 64=8 --syscall-score 93=2
 ```
 
 One-command smoke test (build + run a tiny RV32 sample):
@@ -27,6 +28,8 @@ One-command smoke test (build + run a tiny RV32 sample):
 ```bash
 ./scripts/run_sample_rv32.sh
 ```
+
+Demo C source for the smoke test lives at `examples/demo/hello_world_rv32.c`.
 
 This project provides an implementation of the Hecate virtual machine.
 
