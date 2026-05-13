@@ -43,11 +43,9 @@ jobs:
       - name: Run build
         run: |
           cargo build --all --release
-          strip --strip-all ./target/release/hasm
           strip --strip-all ./target/release/hecate-vm
-          strip --strip-all ./target/release/hepack
-          strip --strip-all ./target/release/hecate-turtle
-          tar -czf hecate-linux.tar.gz -C ./target/release/ hasm hecate-vm hepack hecate-turtle
+          tar -czf hecate-linux.tar.gz -C ./target/release/ hecate-vm
+          ./scripts/build_sample_rv32.sh
 
       - name: Upload release
         id: upload-release-linux
@@ -56,7 +54,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_paths: '["hecate-linux.tar.gz"]'
+          asset_paths: '["hecate-linux.tar.gz", "target/hecate-rv32-build/examples-build/hello_world_rv32.elf"]'
 
   build-macos:
     runs-on: macos-latest
@@ -72,7 +70,7 @@ jobs:
       - name: Run build
         run: |
           cargo build --all --release
-          tar -czf hecate-macos.tar.gz -C ./target/release/ hasm hecate-vm hepack hecate-turtle
+          tar -czf hecate-macos.tar.gz -C ./target/release/ hecate-vm
 
       - name: Upload release
         id: upload-release-linux
@@ -84,7 +82,7 @@ jobs:
           asset_paths: '["hecate-macos.tar.gz"]'
 
   build-windows:
-    runs-on: windows-2019
+    runs-on: windows-2025
     permissions: write-all
     needs: release
 
