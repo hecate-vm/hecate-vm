@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="$(mktemp -d)"
-C_FILE="$ROOT_DIR/examples/demo/hello_world_rv32.c"
+C_FILE="$ROOT_DIR/examples/hello_world_rv32.c"
+RUNTIME_DIR="$ROOT_DIR/runtime"
+RUNTIME_INCLUDE_DIR="$RUNTIME_DIR/include"
+CRT_FILE="$RUNTIME_DIR/src/crt0_rv32.c"
+SYSCALLS_FILE="$RUNTIME_DIR/src/syscalls_rv32.c"
+STDIO_FILE="$RUNTIME_DIR/src/stdio_rv32.c"
 ELF_FILE="$WORK_DIR/sample.elf"
 
 cleanup() {
@@ -16,6 +21,26 @@ if [[ ! -f "$C_FILE" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$CRT_FILE" ]]; then
+  echo "Missing runtime source file: $CRT_FILE" >&2
+  exit 1
+fi
+
+if [[ ! -f "$SYSCALLS_FILE" ]]; then
+  echo "Missing runtime source file: $SYSCALLS_FILE" >&2
+  exit 1
+fi
+
+if [[ ! -f "$STDIO_FILE" ]]; then
+  echo "Missing runtime source file: $STDIO_FILE" >&2
+  exit 1
+fi
+
+if [[ ! -d "$RUNTIME_INCLUDE_DIR" ]]; then
+  echo "Missing runtime include directory: $RUNTIME_INCLUDE_DIR" >&2
+  exit 1
+fi
+
 compile_with_riscv_gcc() {
   local cc="$1"
   "$cc" \
@@ -24,9 +49,13 @@ compile_with_riscv_gcc() {
     -fno-builtin \
     -march=rv32im \
     -mabi=ilp32 \
+    -I"$RUNTIME_INCLUDE_DIR" \
     -Wl,-e,_start \
     -Wl,-Ttext=0x10000000 \
     -o "$ELF_FILE" \
+    "$CRT_FILE" \
+    "$SYSCALLS_FILE" \
+    "$STDIO_FILE" \
     "$C_FILE"
 }
 
@@ -38,10 +67,14 @@ compile_with_clang() {
     -fno-builtin \
     -march=rv32im \
     -mabi=ilp32 \
+    -I"$RUNTIME_INCLUDE_DIR" \
     -Wl,-e,_start \
     -Wl,-Ttext=0x10000000 \
     -fuse-ld=lld \
     -o "$ELF_FILE" \
+    "$CRT_FILE" \
+    "$SYSCALLS_FILE" \
+    "$STDIO_FILE" \
     "$C_FILE"
 }
 

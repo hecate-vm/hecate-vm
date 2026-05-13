@@ -29,7 +29,6 @@ One-command smoke test (build + run a tiny RV32 sample):
 ./scripts/run_sample_rv32.sh
 ```
 
-Demo C source for the smoke test lives at `examples/demo/hello_world_rv32.c`.
 
 This project provides an implementation of the Hecate virtual machine.
 
