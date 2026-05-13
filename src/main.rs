@@ -32,8 +32,10 @@ struct RunStats {
     syscall_count: u64,
     syscall_cycles: u64,
     syscall_hits: HashMap<u32, u64>,
+    syscall_cycle_totals: HashMap<u32, u64>,
     cache_hits: CacheHits,
     io_bytes_written: u64,
+    io_cycles: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +507,7 @@ fn handle_syscall(
     memory: &HecateMemory,
     config: &SimConfig,
     code: u32,
-) -> bool {
+) -> (bool, u64, u64) {
     match code {
         64 => {
             let fd = state.x[10];
@@ -513,24 +515,21 @@ fn handle_syscall(
             let len = state.x[12];
 
             if fd == 1 || fd == 2 {
-                let mut stats = memory.stats.borrow_mut();
-                stats.io_bytes_written = stats.io_bytes_written.wrapping_add(len as u64);
-                stats.cycles = stats
-                    .cycles
-                    .wrapping_add(len as u64 * config.io_cycles_per_byte);
                 let bytes = read_program_bytes(memory, buf_addr, len);
                 let mut out = std::io::stdout().lock();
                 let _ = out.write_all(&bytes);
                 let _ = out.flush();
                 state.x[10] = len;
+                let io_bytes = len as u64;
+                let extra_cycles = io_bytes.wrapping_mul(config.io_cycles_per_byte);
+                (true, extra_cycles, io_bytes)
             } else {
                 state.x[10] = 0;
+                (true, 0, 0)
             }
-
-            true
         }
-        93 => false,
-        _ => true,
+        93 => (false, 0, 0),
+        _ => (true, 0, 0),
     }
 }
 
@@ -558,6 +557,7 @@ fn report_result(
     println!("Data stores: {}", stats.data_stores);
     println!("Syscalls: {}", stats.syscall_count);
     println!("Syscall cycles contribution: {}", stats.syscall_cycles);
+    println!("I/O cycles contribution: {}", stats.io_cycles);
     println!("IO Bytes Written: {}", stats.io_bytes_written);
     println!("Cache hits L1I: {}", stats.cache_hits.l1i);
     println!("Cache hits L1D: {}", stats.cache_hits.l1d);
@@ -575,12 +575,13 @@ fn report_result(
         calls.sort_by_key(|(code, _)| *code);
 
         for (code, count) in calls {
-            let cycles =
+            let base_cycles =
                 syscall_cycles_for(code, config.default_syscall_cycles, &config.syscall_cycles);
-            let subtotal = cycles.saturating_mul(count);
+            let subtotal = stats.syscall_cycle_totals.get(&code).copied().unwrap_or(0);
+            let variable_cycles = subtotal.saturating_sub(base_cycles.saturating_mul(count));
             println!(
-                "  syscall {}: count={} cycles_each={} subtotal={}",
-                code, count, cycles, subtotal
+                "  syscall {}: count={} base_cycles_each={} variable_cycles={} subtotal={}",
+                code, count, base_cycles, variable_cycles, subtotal
             );
         }
     }
@@ -642,9 +643,20 @@ fn run_elf(
             stats.syscall_cycles = stats.syscall_cycles.wrapping_add(syscall_cycles);
             stats.cycles = stats.cycles.wrapping_add(syscall_cycles);
             *stats.syscall_hits.entry(syscall_code).or_insert(0) += 1;
+            *stats.syscall_cycle_totals.entry(syscall_code).or_insert(0) += syscall_cycles;
         }
 
-        let should_continue = handle_syscall(&mut state, &memory, &config, syscall_code);
+        let (should_continue, extra_cycles, io_bytes_written) =
+            handle_syscall(&mut state, &memory, &config, syscall_code);
+        if extra_cycles != 0 || io_bytes_written != 0 {
+            let mut stats = shared_stats.borrow_mut();
+            stats.io_cycles = stats.io_cycles.wrapping_add(extra_cycles);
+            stats.io_bytes_written = stats.io_bytes_written.wrapping_add(io_bytes_written);
+            stats.syscall_cycles = stats.syscall_cycles.wrapping_add(extra_cycles);
+            stats.cycles = stats.cycles.wrapping_add(extra_cycles);
+            *stats.syscall_cycle_totals.entry(syscall_code).or_insert(0) += extra_cycles;
+        }
+
         if !should_continue {
             break error;
         }
