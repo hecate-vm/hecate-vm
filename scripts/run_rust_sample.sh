@@ -8,7 +8,7 @@ TARGET_TRIPLE="riscv32im-hecate-none-elf"
 TARGET_PATH="$ROOT_DIR/runtime/rust/targets"
 TARGET_SPEC="$TARGET_PATH/$TARGET_TRIPLE.json"
 BIN_NAME="rust_hello"
-ELF_FILE="$EXAMPLE_DIR/target/$TARGET_TRIPLE/release/$BIN_NAME"
+ELF_FILE="$EXAMPLE_DIR/target/$TARGET_TRIPLE/release/$BIN_NAME.elf"
 
 if [[ ! -f "$MANIFEST_PATH" ]]; then
   echo "Missing Rust sample manifest: $MANIFEST_PATH" >&2
@@ -57,9 +57,9 @@ RUSTFLAGS="${RUSTFLAGS:-} -Zunstable-options" \
 if [[ ! -f "$ELF_FILE" ]]; then
   # When --target is passed as JSON path, Cargo still usually uses the stem
   # as target directory, but we resolve dynamically for portability.
-  ELF_FILE="$(find "$EXAMPLE_DIR/target" -type f -path "*/release/$BIN_NAME" | head -n1)"
+  ELF_FILE="$(find "$EXAMPLE_DIR/target" -type f -path "*/release/$BIN_NAME.elf" | head -n1)"
   if [[ -z "$ELF_FILE" ]]; then
-    echo "Build completed but ELF was not found under $EXAMPLE_DIR/target" >&2
+    echo "Build completed but Rust ELF was not found under $EXAMPLE_DIR/target" >&2
     exit 1
   fi
 fi
