@@ -1,6 +1,6 @@
 [package]
 name = "hecate-vm"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 description = "The main package for the hecate vm"
 license-file = "LICENSE"
@@ -9,7 +9,7 @@ repository = "https://github.com/hecate-vm/hecate-vm"
 [dependencies]
 anyhow = "1.0.95"
 clap = { version = "4.5.22", features = ["derive"] }
-rvsim = { git = "https://github.com/hecate-vm/rvsim", version = "0.2.2", default-features = false }
+rvsim = { git = "https://github.com/hecate-vm/rvsim", branch = "fix/windows_build", version = "0.2.2", default-features = false }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 

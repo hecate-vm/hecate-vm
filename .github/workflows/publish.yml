@@ -101,28 +101,28 @@ jobs:
           upload_url: ${{ needs.release.outputs.upload_url }}
           asset_paths: '["hecate-macos.tar.gz"]'
 
-  # build-windows:
-  #   runs-on: windows-2025
-  #   permissions: write-all
-  #   needs: release
+  build-windows:
+    runs-on: windows-2025
+    permissions: write-all
+    needs: release
 
-  #   steps:
-  #     - uses: actions/checkout@v2
+    steps:
+      - uses: actions/checkout@v2
 
-  #     - name: Run tests
-  #       run: cargo test --verbose
+      - name: Run tests
+        run: cargo test --verbose
 
-  #     - name: Run build
-  #       run: cargo build --all --release
+      - name: Run build
+        run: cargo build --all --release
 
-  #     - name: Create Zip
-  #       run: Compress-Archive -Path ./target/release/*.exe -Destination hecate-windows.zip
+      - name: Create Zip
+        run: Compress-Archive -Path ./target/release/*.exe -Destination hecate-windows.zip
 
-  #     - name: Upload release
-  #       id: upload-release-windows
-  #       uses: alexellis/upload-assets@0.2.3
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #       with:
-  #         upload_url: ${{ steps.create_release.outputs.upload_url }}
-  #         asset_paths: '["hecate-windows.zip"]'
+      - name: Upload release
+        id: upload-release-windows
+        uses: alexellis/upload-assets@0.2.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_paths: '["hecate-windows.zip"]'
