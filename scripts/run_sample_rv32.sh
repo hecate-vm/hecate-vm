@@ -52,4 +52,4 @@ cmake \
 
 echo "Built sample ELF: $ELF_FILE"
 cd "$ROOT_DIR"
-cargo run -- run "$ELF_FILE" --dump-registers "$@"
+cargo run -- run "$ELF_FILE" "$@"

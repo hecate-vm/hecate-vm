@@ -9,12 +9,9 @@ use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use rvsim::elf::{Elf32, ELF_PROGRAM_TYPE_LOADABLE};
 use rvsim::{Clock, CpuError, CpuState, Interp, Memory, MemoryAccess, Op};
+use serde::Deserialize;
 
-const L1_LATENCY: u64 = 3;
-const L2_LATENCY: u64 = 11;
-const L3_LATENCY: u64 = 50;
-const MEMORY_LATENCY: u64 = 125;
-const STORE_LATENCY: u64 = 1;
+const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
 #[derive(Debug, Clone, Default)]
 struct CacheHits {
@@ -36,12 +33,93 @@ struct RunStats {
     syscall_cycles: u64,
     syscall_hits: HashMap<u32, u64>,
     cache_hits: CacheHits,
+    io_bytes_written: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SyscallScoreArg {
-    syscall: u32,
-    score: u64,
+// ---------------------------------------------------------------------------
+// Simulation config (loaded from TOML)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct LatencyConfigRaw {
+    l1: Option<u64>,
+    l2: Option<u64>,
+    l3: Option<u64>,
+    memory: Option<u64>,
+    store: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct SimConfigRaw {
+    default_syscall_cycles: Option<u64>,
+    io_cycles_per_byte: Option<u64>,
+    #[serde(default)]
+    latency: LatencyConfigRaw,
+    #[serde(default)]
+    syscall_cycles: HashMap<String, u64>,
+}
+
+impl SimConfigRaw {
+    /// Overlay `user` on top of `self` (user values win; syscall_cycles are merged).
+    fn merge_with(self, user: SimConfigRaw) -> SimConfigRaw {
+        SimConfigRaw {
+            default_syscall_cycles: user.default_syscall_cycles.or(self.default_syscall_cycles),
+            io_cycles_per_byte: user.io_cycles_per_byte.or(self.io_cycles_per_byte),
+            latency: LatencyConfigRaw {
+                l1: user.latency.l1.or(self.latency.l1),
+                l2: user.latency.l2.or(self.latency.l2),
+                l3: user.latency.l3.or(self.latency.l3),
+                memory: user.latency.memory.or(self.latency.memory),
+                store: user.latency.store.or(self.latency.store),
+            },
+            syscall_cycles: {
+                let mut cycles = self.syscall_cycles;
+                cycles.extend(user.syscall_cycles);
+                cycles
+            },
+        }
+    }
+
+    fn resolve(self) -> anyhow::Result<SimConfig> {
+        let syscall_cycles = self
+            .syscall_cycles
+            .into_iter()
+            .map(|(k, v)| {
+                let code = parse_u32_auto(&k)
+                    .map_err(|e| anyhow!("invalid syscall key in config: {e}"))?;
+                Ok((code, v))
+            })
+            .collect::<anyhow::Result<HashMap<u32, u64>>>()?;
+
+        Ok(SimConfig {
+            default_syscall_cycles: self.default_syscall_cycles.unwrap_or(500),
+            io_cycles_per_byte: self.io_cycles_per_byte.unwrap_or(20),
+            l1_latency: self.latency.l1.unwrap_or(3),
+            l2_latency: self.latency.l2.unwrap_or(11),
+            l3_latency: self.latency.l3.unwrap_or(50),
+            memory_latency: self.latency.memory.unwrap_or(125),
+            store_latency: self.latency.store.unwrap_or(1),
+            syscall_cycles,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SimConfig {
+    default_syscall_cycles: u64,
+    io_cycles_per_byte: u64,
+    l1_latency: u64,
+    l2_latency: u64,
+    l3_latency: u64,
+    memory_latency: u64,
+    store_latency: u64,
+    syscall_cycles: HashMap<u32, u64>,
+}
+
+fn load_config(path: &std::path::Path) -> anyhow::Result<SimConfigRaw> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config: {}", path.display()))?;
+    toml::from_str(&text).with_context(|| format!("Failed to parse config: {}", path.display()))
 }
 
 fn parse_u32_auto(raw: &str) -> Result<u32, String> {
@@ -51,24 +129,6 @@ fn parse_u32_auto(raw: &str) -> Result<u32, String> {
         raw.parse::<u32>()
             .map_err(|e| format!("invalid u32 '{raw}': {e}"))
     }
-}
-
-fn parse_u64_auto(raw: &str) -> Result<u64, String> {
-    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
-        u64::from_str_radix(hex, 16).map_err(|e| format!("invalid u64 hex '{raw}': {e}"))
-    } else {
-        raw.parse::<u64>()
-            .map_err(|e| format!("invalid u64 '{raw}': {e}"))
-    }
-}
-
-fn parse_syscall_score(raw: &str) -> Result<SyscallScoreArg, String> {
-    let (syscall_raw, score_raw) = raw
-        .split_once('=')
-        .ok_or_else(|| "expected format SYSCALL=SCORE".to_string())?;
-    let syscall = parse_u32_auto(syscall_raw.trim())?;
-    let score = parse_u64_auto(score_raw.trim())?;
-    Ok(SyscallScoreArg { syscall, score })
 }
 
 #[derive(Debug)]
@@ -121,10 +181,25 @@ struct CacheHierarchy {
     l1d: CacheLevel,
     l2: CacheLevel,
     l3: CacheLevel,
+    l1_latency: u64,
+    l2_latency: u64,
+    l3_latency: u64,
+    memory_latency: u64,
+    store_latency: u64,
 }
 
 impl CacheHierarchy {
-    fn new(line_size: u32, l1_bytes: u32, l2_bytes: u32, l3_bytes: u32) -> Self {
+    fn new(
+        line_size: u32,
+        l1_bytes: u32,
+        l2_bytes: u32,
+        l3_bytes: u32,
+        l1_latency: u64,
+        l2_latency: u64,
+        l3_latency: u64,
+        memory_latency: u64,
+        store_latency: u64,
+    ) -> Self {
         let lines = |bytes: u32| -> usize { (bytes / line_size).max(1) as usize };
         Self {
             line_size,
@@ -132,6 +207,11 @@ impl CacheHierarchy {
             l1d: CacheLevel::new(lines(l1_bytes)),
             l2: CacheLevel::new(lines(l2_bytes)),
             l3: CacheLevel::new(lines(l3_bytes)),
+            l1_latency,
+            l2_latency,
+            l3_latency,
+            memory_latency,
+            store_latency,
         }
     }
 
@@ -153,26 +233,26 @@ impl CacheHierarchy {
             } else {
                 stats.cache_hits.l1d += 1;
             }
-            return L1_LATENCY;
+            return self.l1_latency;
         }
 
         if self.l2.touch(line) {
             stats.cache_hits.l2 += 1;
             l1.insert(line);
-            return L2_LATENCY;
+            return self.l2_latency;
         }
 
         if self.l3.touch(line) {
             stats.cache_hits.l3 += 1;
             self.l2.insert(line);
             l1.insert(line);
-            return L3_LATENCY;
+            return self.l3_latency;
         }
 
         self.l3.insert(line);
         self.l2.insert(line);
         l1.insert(line);
-        MEMORY_LATENCY
+        self.memory_latency
     }
 
     fn store_cost(&mut self, addr: u32) -> u64 {
@@ -180,7 +260,7 @@ impl CacheHierarchy {
         self.l1d.insert(line);
         self.l2.insert(line);
         self.l3.insert(line);
-        STORE_LATENCY
+        self.store_latency
     }
 }
 
@@ -192,11 +272,28 @@ struct HecateMemory {
 }
 
 impl HecateMemory {
-    fn new(stats: Rc<RefCell<RunStats>>, line_size: u32, l1: u32, l2: u32, l3: u32) -> Self {
+    fn new(
+        stats: Rc<RefCell<RunStats>>,
+        line_size: u32,
+        l1: u32,
+        l2: u32,
+        l3: u32,
+        config: &SimConfig,
+    ) -> Self {
         Self {
             bytes: HashMap::new(),
             stats,
-            caches: CacheHierarchy::new(line_size, l1, l2, l3),
+            caches: CacheHierarchy::new(
+                line_size,
+                l1,
+                l2,
+                l3,
+                config.l1_latency,
+                config.l2_latency,
+                config.l3_latency,
+                config.memory_latency,
+                config.store_latency,
+            ),
         }
     }
 
@@ -348,10 +445,9 @@ enum Action {
         max_instructions: Option<u64>,
         #[arg(long)]
         dump_registers: bool,
-        #[arg(long, default_value_t = 0)]
-        default_syscall_score: u64,
-        #[arg(long = "syscall-score", value_name = "SYSCALL=SCORE", value_parser = parse_syscall_score)]
-        syscall_scores: Vec<SyscallScoreArg>,
+        /// Path to a TOML config file (merged with the built-in defaults).
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -387,8 +483,8 @@ fn load_elf(path: &PathBuf, memory: &mut HecateMemory) -> anyhow::Result<u32> {
     Ok(entry)
 }
 
-fn syscall_score_for(code: u32, default_score: u64, syscall_scores: &HashMap<u32, u64>) -> u64 {
-    syscall_scores.get(&code).copied().unwrap_or(default_score)
+fn syscall_cycles_for(code: u32, default_cycles: u64, syscall_cycles: &HashMap<u32, u64>) -> u64 {
+    syscall_cycles.get(&code).copied().unwrap_or(default_cycles)
 }
 
 fn read_program_bytes(memory: &HecateMemory, addr: u32, len: u32) -> Vec<u8> {
@@ -404,7 +500,12 @@ fn read_program_bytes(memory: &HecateMemory, addr: u32, len: u32) -> Vec<u8> {
     bytes
 }
 
-fn handle_syscall(state: &mut CpuState, memory: &HecateMemory, code: u32) -> bool {
+fn handle_syscall(
+    state: &mut CpuState,
+    memory: &HecateMemory,
+    config: &SimConfig,
+    code: u32,
+) -> bool {
     match code {
         64 => {
             let fd = state.x[10];
@@ -412,6 +513,11 @@ fn handle_syscall(state: &mut CpuState, memory: &HecateMemory, code: u32) -> boo
             let len = state.x[12];
 
             if fd == 1 || fd == 2 {
+                let mut stats = memory.stats.borrow_mut();
+                stats.io_bytes_written = stats.io_bytes_written.wrapping_add(len as u64);
+                stats.cycles = stats
+                    .cycles
+                    .wrapping_add(len as u64 * config.io_cycles_per_byte);
                 let bytes = read_program_bytes(memory, buf_addr, len);
                 let mut out = std::io::stdout().lock();
                 let _ = out.write_all(&bytes);
@@ -433,8 +539,7 @@ fn report_result(
     state: &CpuState,
     stats: &RunStats,
     dump_registers: bool,
-    default_syscall_score: u64,
-    syscall_scores: &HashMap<u32, u64>,
+    config: &SimConfig,
 ) {
     println!();
     println!("========== RESULT/STATS ==========");
@@ -452,7 +557,8 @@ fn report_result(
     println!("Data loads: {}", stats.data_loads);
     println!("Data stores: {}", stats.data_stores);
     println!("Syscalls: {}", stats.syscall_count);
-    println!("Syscall score contribution: {}", stats.syscall_cycles);
+    println!("Syscall cycles contribution: {}", stats.syscall_cycles);
+    println!("IO Bytes Written: {}", stats.io_bytes_written);
     println!("Cache hits L1I: {}", stats.cache_hits.l1i);
     println!("Cache hits L1D: {}", stats.cache_hits.l1d);
     println!("Cache hits L2: {}", stats.cache_hits.l2);
@@ -469,11 +575,12 @@ fn report_result(
         calls.sort_by_key(|(code, _)| *code);
 
         for (code, count) in calls {
-            let score = syscall_score_for(code, default_syscall_score, syscall_scores);
-            let subtotal = score.saturating_mul(count);
+            let cycles =
+                syscall_cycles_for(code, config.default_syscall_cycles, &config.syscall_cycles);
+            let subtotal = cycles.saturating_mul(count);
             println!(
-                "  syscall {}: count={} score_each={} subtotal={}",
-                code, count, score, subtotal
+                "  syscall {}: count={} cycles_each={} subtotal={}",
+                code, count, cycles, subtotal
             );
         }
     }
@@ -495,8 +602,7 @@ fn run_elf(
     l3_size: u32,
     max_instructions: Option<u64>,
     dump_registers: bool,
-    default_syscall_score: u64,
-    syscall_scores: HashMap<u32, u64>,
+    config: SimConfig,
 ) -> anyhow::Result<()> {
     let shared_stats = Rc::new(RefCell::new(RunStats::default()));
     let mut memory = HecateMemory::new(
@@ -505,6 +611,7 @@ fn run_elf(
         l1_size,
         l2_size,
         l3_size,
+        &config,
     );
 
     let entry = load_elf(&path, &mut memory)?;
@@ -523,18 +630,21 @@ fn run_elf(
         }
 
         let syscall_code = state.x[17];
-        let syscall_score = syscall_score_for(syscall_code, default_syscall_score, &syscall_scores);
+        let syscall_cycles = syscall_cycles_for(
+            syscall_code,
+            config.default_syscall_cycles,
+            &config.syscall_cycles,
+        );
         {
             let mut stats = shared_stats.borrow_mut();
             stats.instret = stats.instret.wrapping_add(1);
-            stats.cycles = stats.cycles.wrapping_add(1);
             stats.syscall_count = stats.syscall_count.wrapping_add(1);
-            stats.syscall_cycles = stats.syscall_cycles.wrapping_add(syscall_score);
-            stats.cycles = stats.cycles.wrapping_add(syscall_score);
+            stats.syscall_cycles = stats.syscall_cycles.wrapping_add(syscall_cycles);
+            stats.cycles = stats.cycles.wrapping_add(syscall_cycles);
             *stats.syscall_hits.entry(syscall_code).or_insert(0) += 1;
         }
 
-        let should_continue = handle_syscall(&mut state, &memory, syscall_code);
+        let should_continue = handle_syscall(&mut state, &memory, &config, syscall_code);
         if !should_continue {
             break error;
         }
@@ -543,14 +653,7 @@ fn run_elf(
     };
 
     let stats = shared_stats.borrow().clone();
-    report_result(
-        error,
-        &state,
-        &stats,
-        dump_registers,
-        default_syscall_score,
-        &syscall_scores,
-    );
+    report_result(error, &state, &stats, dump_registers, &config);
 
     Ok(())
 }
@@ -567,22 +670,30 @@ fn main() -> anyhow::Result<()> {
             l3_size,
             max_instructions,
             dump_registers,
-            default_syscall_score,
-            syscall_scores,
-        } => run_elf(
-            path,
-            cache_line_size,
-            l1_size,
-            l2_size,
-            l3_size,
-            max_instructions,
-            dump_registers,
-            default_syscall_score,
-            syscall_scores
-                .into_iter()
-                .map(|entry| (entry.syscall, entry.score))
-                .collect(),
-        )?,
+            config: config_path,
+        } => {
+            let default_raw: SimConfigRaw = toml::from_str(DEFAULT_CONFIG)
+                .context("Failed to parse built-in default config")?;
+            let config = match config_path {
+                Some(ref path) => {
+                    let user_raw = load_config(path)?;
+                    default_raw.merge_with(user_raw)
+                }
+                None => default_raw,
+            }
+            .resolve()?;
+
+            run_elf(
+                path,
+                cache_line_size,
+                l1_size,
+                l2_size,
+                l3_size,
+                max_instructions,
+                dump_registers,
+                config,
+            )?
+        }
     }
 
     Ok(())
