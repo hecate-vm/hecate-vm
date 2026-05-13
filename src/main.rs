@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Write;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -31,7 +32,43 @@ struct RunStats {
     instruction_fetches: u64,
     data_loads: u64,
     data_stores: u64,
+    syscall_count: u64,
+    syscall_cycles: u64,
+    syscall_hits: HashMap<u32, u64>,
     cache_hits: CacheHits,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SyscallScoreArg {
+    syscall: u32,
+    score: u64,
+}
+
+fn parse_u32_auto(raw: &str) -> Result<u32, String> {
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).map_err(|e| format!("invalid u32 hex '{raw}': {e}"))
+    } else {
+        raw.parse::<u32>()
+            .map_err(|e| format!("invalid u32 '{raw}': {e}"))
+    }
+}
+
+fn parse_u64_auto(raw: &str) -> Result<u64, String> {
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).map_err(|e| format!("invalid u64 hex '{raw}': {e}"))
+    } else {
+        raw.parse::<u64>()
+            .map_err(|e| format!("invalid u64 '{raw}': {e}"))
+    }
+}
+
+fn parse_syscall_score(raw: &str) -> Result<SyscallScoreArg, String> {
+    let (syscall_raw, score_raw) = raw
+        .split_once('=')
+        .ok_or_else(|| "expected format SYSCALL=SCORE".to_string())?;
+    let syscall = parse_u32_auto(syscall_raw.trim())?;
+    let score = parse_u64_auto(score_raw.trim())?;
+    Ok(SyscallScoreArg { syscall, score })
 }
 
 #[derive(Debug)]
@@ -311,6 +348,10 @@ enum Action {
         max_instructions: Option<u64>,
         #[arg(long)]
         dump_registers: bool,
+        #[arg(long, default_value_t = 0)]
+        default_syscall_score: u64,
+        #[arg(long = "syscall-score", value_name = "SYSCALL=SCORE", value_parser = parse_syscall_score)]
+        syscall_scores: Vec<SyscallScoreArg>,
     },
 }
 
@@ -346,7 +387,55 @@ fn load_elf(path: &PathBuf, memory: &mut HecateMemory) -> anyhow::Result<u32> {
     Ok(entry)
 }
 
-fn report_result(error: CpuError, state: &CpuState, stats: &RunStats, dump_registers: bool) {
+fn syscall_score_for(code: u32, default_score: u64, syscall_scores: &HashMap<u32, u64>) -> u64 {
+    syscall_scores.get(&code).copied().unwrap_or(default_score)
+}
+
+fn read_program_bytes(memory: &HecateMemory, addr: u32, len: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let b = memory
+            .bytes
+            .get(&addr.wrapping_add(i))
+            .copied()
+            .unwrap_or(0);
+        bytes.push(b);
+    }
+    bytes
+}
+
+fn handle_syscall(state: &mut CpuState, memory: &HecateMemory, code: u32) -> bool {
+    match code {
+        64 => {
+            let fd = state.x[10];
+            let buf_addr = state.x[11];
+            let len = state.x[12];
+
+            if fd == 1 || fd == 2 {
+                let bytes = read_program_bytes(memory, buf_addr, len);
+                let mut out = std::io::stdout().lock();
+                let _ = out.write_all(&bytes);
+                let _ = out.flush();
+                state.x[10] = len;
+            } else {
+                state.x[10] = 0;
+            }
+
+            true
+        }
+        93 => false,
+        _ => true,
+    }
+}
+
+fn report_result(
+    error: CpuError,
+    state: &CpuState,
+    stats: &RunStats,
+    dump_registers: bool,
+    default_syscall_score: u64,
+    syscall_scores: &HashMap<u32, u64>,
+) {
     println!();
     println!("========== RESULT/STATS ==========");
     println!();
@@ -362,10 +451,32 @@ fn report_result(error: CpuError, state: &CpuState, stats: &RunStats, dump_regis
     println!("Instruction fetches: {}", stats.instruction_fetches);
     println!("Data loads: {}", stats.data_loads);
     println!("Data stores: {}", stats.data_stores);
+    println!("Syscalls: {}", stats.syscall_count);
+    println!("Syscall score contribution: {}", stats.syscall_cycles);
     println!("Cache hits L1I: {}", stats.cache_hits.l1i);
     println!("Cache hits L1D: {}", stats.cache_hits.l1d);
     println!("Cache hits L2: {}", stats.cache_hits.l2);
     println!("Cache hits L3: {}", stats.cache_hits.l3);
+
+    if !stats.syscall_hits.is_empty() {
+        println!();
+        println!("Syscall breakdown:");
+        let mut calls: Vec<(u32, u64)> = stats
+            .syscall_hits
+            .iter()
+            .map(|(code, count)| (*code, *count))
+            .collect();
+        calls.sort_by_key(|(code, _)| *code);
+
+        for (code, count) in calls {
+            let score = syscall_score_for(code, default_syscall_score, syscall_scores);
+            let subtotal = score.saturating_mul(count);
+            println!(
+                "  syscall {}: count={} score_each={} subtotal={}",
+                code, count, score, subtotal
+            );
+        }
+    }
 
     if dump_registers {
         println!();
@@ -384,6 +495,8 @@ fn run_elf(
     l3_size: u32,
     max_instructions: Option<u64>,
     dump_registers: bool,
+    default_syscall_score: u64,
+    syscall_scores: HashMap<u32, u64>,
 ) -> anyhow::Result<()> {
     let shared_stats = Rc::new(RefCell::new(RunStats::default()));
     let mut memory = HecateMemory::new(
@@ -399,13 +512,45 @@ fn run_elf(
     let mut state = CpuState::new(entry);
     let mut clock = HecateClock::new(Rc::clone(&shared_stats), max_instructions);
 
-    let (error, _last_op) = {
-        let mut interp = Interp::new(&mut state, &mut memory, &mut clock);
-        interp.run()
+    let error = loop {
+        let (error, _last_op) = {
+            let mut interp = Interp::new(&mut state, &mut memory, &mut clock);
+            interp.run()
+        };
+
+        if error != CpuError::Ecall {
+            break error;
+        }
+
+        let syscall_code = state.x[17];
+        let syscall_score = syscall_score_for(syscall_code, default_syscall_score, &syscall_scores);
+        {
+            let mut stats = shared_stats.borrow_mut();
+            stats.instret = stats.instret.wrapping_add(1);
+            stats.cycles = stats.cycles.wrapping_add(1);
+            stats.syscall_count = stats.syscall_count.wrapping_add(1);
+            stats.syscall_cycles = stats.syscall_cycles.wrapping_add(syscall_score);
+            stats.cycles = stats.cycles.wrapping_add(syscall_score);
+            *stats.syscall_hits.entry(syscall_code).or_insert(0) += 1;
+        }
+
+        let should_continue = handle_syscall(&mut state, &memory, syscall_code);
+        if !should_continue {
+            break error;
+        }
+
+        state.pc = state.pc.wrapping_add(4);
     };
 
     let stats = shared_stats.borrow().clone();
-    report_result(error, &state, &stats, dump_registers);
+    report_result(
+        error,
+        &state,
+        &stats,
+        dump_registers,
+        default_syscall_score,
+        &syscall_scores,
+    );
 
     Ok(())
 }
@@ -422,6 +567,8 @@ fn main() -> anyhow::Result<()> {
             l3_size,
             max_instructions,
             dump_registers,
+            default_syscall_score,
+            syscall_scores,
         } => run_elf(
             path,
             cache_line_size,
@@ -430,6 +577,11 @@ fn main() -> anyhow::Result<()> {
             l3_size,
             max_instructions,
             dump_registers,
+            default_syscall_score,
+            syscall_scores
+                .into_iter()
+                .map(|entry| (entry.syscall, entry.score))
+                .collect(),
         )?,
     }
 

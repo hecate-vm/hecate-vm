@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="$(mktemp -d)"
-ASM_FILE="$WORK_DIR/sample.s"
+C_FILE="$ROOT_DIR/examples/demo/hello_world_rv32.c"
 ELF_FILE="$WORK_DIR/sample.elf"
 
 cleanup() {
@@ -11,38 +11,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat >"$ASM_FILE" <<'ASM'
-.section .text
-.globl _start
-_start:
-  li a0, 42
-  li a7, 93
-  ecall
-ASM
+if [[ ! -f "$C_FILE" ]]; then
+  echo "Missing demo source file: $C_FILE" >&2
+  exit 1
+fi
 
 compile_with_riscv_gcc() {
   local cc="$1"
   "$cc" \
     -nostdlib \
+    -ffreestanding \
+    -fno-builtin \
     -march=rv32im \
     -mabi=ilp32 \
     -Wl,-e,_start \
     -Wl,-Ttext=0x10000000 \
     -o "$ELF_FILE" \
-    "$ASM_FILE"
+    "$C_FILE"
 }
 
 compile_with_clang() {
   clang \
     --target=riscv32-unknown-elf \
     -nostdlib \
+    -ffreestanding \
+    -fno-builtin \
     -march=rv32im \
     -mabi=ilp32 \
     -Wl,-e,_start \
     -Wl,-Ttext=0x10000000 \
     -fuse-ld=lld \
     -o "$ELF_FILE" \
-    "$ASM_FILE"
+    "$C_FILE"
 }
 
 if command -v riscv32-none-elf-gcc >/dev/null 2>&1; then
