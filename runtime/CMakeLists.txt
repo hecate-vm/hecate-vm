@@ -14,6 +14,8 @@ add_library(hecate_runtime_rv32 OBJECT
   src/crt0_rv32.c
   src/syscalls_rv32.c
   src/stdio_rv32.c
+  src/stdlib_rv32.c
+  src/string_rv32.c
 )
 
 target_link_libraries(hecate_runtime_rv32

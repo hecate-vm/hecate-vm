@@ -17,6 +17,3 @@ toml = "0.8"
 default = ["rv32c", "rv32fd"]
 rv32c = ["rvsim/rv32c"]
 rv32fd = ["rvsim/rv32fd"]
-
-[workspace]
-members = ["crates/common"]

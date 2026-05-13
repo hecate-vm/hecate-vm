@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="$(mktemp -d)"
-EXAMPLES_DIR="$ROOT_DIR/examples"
+EXAMPLES_DIR="$ROOT_DIR/examples/hello_world"
 RUNTIME_DIR="$ROOT_DIR/runtime"
 TOOLCHAIN_DIR="$RUNTIME_DIR/cmake/toolchains"
 BUILD_DIR="$WORK_DIR/examples-build"
@@ -52,4 +52,4 @@ cmake \
 
 echo "Built sample ELF: $ELF_FILE"
 cd "$ROOT_DIR"
-cargo run -- run "$ELF_FILE" "$@"
+cargo run --release -- run "$ELF_FILE" "$@"

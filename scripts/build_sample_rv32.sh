@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="target/hecate-rv32-build"
-EXAMPLES_DIR="$ROOT_DIR/examples"
+EXAMPLES_DIR="$ROOT_DIR/examples/hello_world"
 RUNTIME_DIR="$ROOT_DIR/runtime"
 TOOLCHAIN_DIR="$RUNTIME_DIR/cmake/toolchains"
 BUILD_DIR="$WORK_DIR/examples-build"

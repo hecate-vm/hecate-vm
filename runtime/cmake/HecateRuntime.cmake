@@ -2,6 +2,10 @@ function(hecate_runtime_apply_rv32_compile_options target_name)
   target_compile_options(${target_name} PRIVATE
     -ffreestanding
     -fno-builtin
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-unwind-tables>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-asynchronous-unwind-tables>
     -march=rv32im
     -mabi=ilp32
   )
