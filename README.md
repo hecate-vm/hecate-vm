@@ -23,10 +23,40 @@ cargo run -- run /path/to/program.elf --cache-line-size 64 --l1-size 32768 --l2-
 cargo run -- run /path/to/program.elf --default-syscall-score 1 --syscall-score 64=8 --syscall-score 93=2
 ```
 
-One-command smoke test (build + run a tiny RV32 sample):
+One-command smoke test (CMake build + VM run):
 
 ```bash
 ./scripts/run_sample_rv32.sh
+```
+
+Manual CMake demo build:
+
+```bash
+cmake -S examples -B build/examples -DCMAKE_TOOLCHAIN_FILE=$PWD/runtime/cmake/toolchains/riscv32-clang.cmake
+cmake --build build/examples --target hello_world_rv32
+cargo run -- run build/examples/hello_world_rv32.elf
+```
+
+If you have GCC cross-compilers installed, you can use one of these instead:
+
+- `runtime/cmake/toolchains/riscv32-none-elf-gcc.cmake`
+- `runtime/cmake/toolchains/riscv64-unknown-elf-gcc.cmake`
+
+Reusable runtime module:
+
+- Runtime root: `runtime/`
+- CMake entrypoint: `runtime/CMakeLists.txt`
+- CMake helpers: `runtime/cmake/HecateRuntime.cmake`
+- Headers: `runtime/include/hecate_runtime/`
+
+To use in another CMake project:
+
+```cmake
+add_subdirectory(path/to/hecate-vm/runtime hecate-runtime)
+
+add_executable(my_program my_program.c)
+set_target_properties(my_program PROPERTIES SUFFIX ".elf")
+hecate_runtime_link(my_program)
 ```
 
 
