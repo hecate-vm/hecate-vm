@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: tests
     permissions: write-all
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v2
 
@@ -45,7 +47,25 @@ jobs:
           cargo build --all --release
           strip --strip-all ./target/release/hecate-vm
           tar -czf hecate-linux.tar.gz -C ./target/release/ hecate-vm
-          ./scripts/build_sample_rv32.sh
+          bash ./scripts/build_samples.sh
+
+      - name: Collect Linux release assets
+        id: collect-linux-assets
+        run: |
+          python - <<'PY'
+          import glob
+          import json
+          import os
+
+          assets = ["hecate-linux.tar.gz"]
+          assets.extend(sorted(glob.glob("target/hecate-rv32-build/examples-build/**/*.elf", recursive=True)))
+
+          if len(assets) == 1:
+            raise SystemExit("No .elf assets found")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+            fh.write(f"asset_paths={json.dumps(assets)}\n")
+          PY
 
       - name: Upload release
         id: upload-release-linux
@@ -53,8 +73,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_paths: '["hecate-linux.tar.gz", "target/hecate-rv32-build/examples-build/hello_world_rv32.elf"]'
+          upload_url: ${{ needs.release.outputs.upload_url }}
+          asset_paths: ${{ steps.collect-linux-assets.outputs.asset_paths }}
 
   build-macos:
     runs-on: macos-latest
@@ -78,7 +98,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          upload_url: ${{ needs.release.outputs.upload_url }}
           asset_paths: '["hecate-macos.tar.gz"]'
 
   # build-windows:
