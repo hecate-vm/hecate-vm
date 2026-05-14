@@ -17,24 +17,29 @@ use crate::{
 const UI_HTML: &str = include_str!("assets/index.html");
 
 #[derive(Debug, Deserialize)]
-struct DapRequest {
-    seq: Option<u64>,
+struct ControlRequest {
+    #[serde(default, alias = "seq")]
+    id: Option<u64>,
     #[serde(rename = "type")]
-    request_type: String,
+    request_type: Option<String>,
     command: String,
     arguments: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
-struct DapResponse {
+struct ControlResponse {
+    id: u64,
     seq: u64,
-    #[serde(rename = "type")]
-    response_type: &'static str,
-    request_seq: u64,
     success: bool,
     command: String,
     message: Option<String>,
     body: Value,
+}
+
+impl ControlRequest {
+    fn request_id(&self) -> u64 {
+        self.id.unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +52,10 @@ struct DebugSnapshot {
     entry_hex: String,
     loaded_path: Option<String>,
     last_stop_reason: String,
+    current_instruction: String,
+    current_instruction_hex: Option<String>,
+    current_instruction_size: Option<u32>,
+    current_instruction_bytes: Option<String>,
     registers: Vec<u32>,
     stats: RunStats,
 }
@@ -302,6 +311,7 @@ impl DebugMachine {
     }
 
     fn snapshot(&self) -> DebugSnapshot {
+        let (instr_text, instr_hex, instr_size, instr_bytes) = self.current_instruction();
         let stats = self.shared_stats.borrow().clone();
         DebugSnapshot {
             running: self.running,
@@ -312,9 +322,223 @@ impl DebugMachine {
             entry_hex: format!("0x{:08x}", self.entry),
             loaded_path: self.loaded_path.as_ref().map(|p| p.display().to_string()),
             last_stop_reason: self.last_stop_reason.clone(),
+            current_instruction: instr_text,
+            current_instruction_hex: instr_hex,
+            current_instruction_size: instr_size,
+            current_instruction_bytes: instr_bytes,
             registers: self.state.x.to_vec(),
             stats,
         }
+    }
+
+    fn current_instruction(&self) -> (String, Option<String>, Option<u32>, Option<String>) {
+        let pc = self.state.pc;
+
+        let b0 = self.memory.bytes.get(&pc).copied();
+        let b1 = self.memory.bytes.get(&pc.wrapping_add(1)).copied();
+        let (Some(b0), Some(b1)) = (b0, b1) else {
+            return (
+                "Unavailable (memory unmapped at PC)".to_string(),
+                None,
+                None,
+                None,
+            );
+        };
+
+        let halfword = (b0 as u16) | ((b1 as u16) << 8);
+        if (halfword & 0b11) != 0b11 {
+            let raw = halfword as u32;
+            let bytes = format!("{:02x} {:02x}", b0, b1);
+            let mnemonic = decode_rvc_mnemonic(halfword);
+            return (
+                format!("{} ({})", mnemonic, bytes),
+                Some(format!("0x{:04x}", raw as u16)),
+                Some(2),
+                Some(bytes),
+            );
+        }
+
+        let b2 = self.memory.bytes.get(&pc.wrapping_add(2)).copied();
+        let b3 = self.memory.bytes.get(&pc.wrapping_add(3)).copied();
+        let (Some(b2), Some(b3)) = (b2, b3) else {
+            let bytes = format!("{:02x} {:02x}", b0, b1);
+            return (
+                "Unavailable (incomplete 32-bit instruction at PC)".to_string(),
+                None,
+                None,
+                Some(bytes),
+            );
+        };
+
+        let raw = (b0 as u32) | ((b1 as u32) << 8) | ((b2 as u32) << 16) | ((b3 as u32) << 24);
+        let bytes = format!("{:02x} {:02x} {:02x} {:02x}", b0, b1, b2, b3);
+        let mnemonic = decode_rv32_mnemonic(raw, pc);
+        (
+            format!("{} ({})", mnemonic, bytes),
+            Some(format!("0x{:08x}", raw)),
+            Some(4),
+            Some(bytes),
+        )
+    }
+}
+
+fn xreg(reg: u32) -> String {
+    format!("x{}", reg)
+}
+
+fn sign_extend(value: u32, width: u32) -> i32 {
+    let shift = 32 - width;
+    ((value << shift) as i32) >> shift
+}
+
+fn decode_rvc_mnemonic(inst: u16) -> String {
+    let funct3 = (inst >> 13) & 0x7;
+    let quadrant = inst & 0x3;
+
+    match (quadrant, funct3) {
+        (0b01, 0b000) => "c.addi".to_string(),
+        (0b01, 0b010) => "c.li".to_string(),
+        (0b01, 0b011) => "c.lui/addi16sp".to_string(),
+        (0b01, 0b100) => "c.misc-alu".to_string(),
+        (0b01, 0b101) => "c.j".to_string(),
+        (0b01, 0b110) => "c.beqz".to_string(),
+        (0b01, 0b111) => "c.bnez".to_string(),
+        (0b10, 0b100) => "c.jr/mv/ebreak/jalr/add".to_string(),
+        _ => "c.unknown".to_string(),
+    }
+}
+
+fn decode_rv32_mnemonic(inst: u32, pc: u32) -> String {
+    let opcode = inst & 0x7f;
+    let rd = (inst >> 7) & 0x1f;
+    let funct3 = (inst >> 12) & 0x7;
+    let rs1 = (inst >> 15) & 0x1f;
+    let rs2 = (inst >> 20) & 0x1f;
+    let funct7 = (inst >> 25) & 0x7f;
+
+    let imm_i = sign_extend(inst >> 20, 12);
+    let imm_s = sign_extend(((inst >> 25) << 5) | ((inst >> 7) & 0x1f), 12);
+    let imm_b = sign_extend(
+        ((inst >> 31) << 12)
+            | (((inst >> 7) & 0x1) << 11)
+            | (((inst >> 25) & 0x3f) << 5)
+            | (((inst >> 8) & 0xf) << 1),
+        13,
+    );
+    let imm_u = inst & 0xffff_f000;
+    let imm_j = sign_extend(
+        ((inst >> 31) << 20)
+            | (((inst >> 12) & 0xff) << 12)
+            | (((inst >> 20) & 0x1) << 11)
+            | (((inst >> 21) & 0x3ff) << 1),
+        21,
+    );
+
+    match opcode {
+        0x37 => format!("lui {}, 0x{:x}", xreg(rd), imm_u),
+        0x17 => format!("auipc {}, 0x{:x}", xreg(rd), imm_u),
+        0x6f => format!(
+            "jal {}, {} -> 0x{:08x}",
+            xreg(rd),
+            imm_j,
+            pc.wrapping_add(imm_j as u32)
+        ),
+        0x67 => format!("jalr {}, {}({})", xreg(rd), imm_i, xreg(rs1)),
+        0x63 => {
+            let mnem = match funct3 {
+                0b000 => "beq",
+                0b001 => "bne",
+                0b100 => "blt",
+                0b101 => "bge",
+                0b110 => "bltu",
+                0b111 => "bgeu",
+                _ => "b?",
+            };
+            format!(
+                "{} {}, {}, {} -> 0x{:08x}",
+                mnem,
+                xreg(rs1),
+                xreg(rs2),
+                imm_b,
+                pc.wrapping_add(imm_b as u32)
+            )
+        }
+        0x03 => {
+            let mnem = match funct3 {
+                0b000 => "lb",
+                0b001 => "lh",
+                0b010 => "lw",
+                0b100 => "lbu",
+                0b101 => "lhu",
+                _ => "l?",
+            };
+            format!("{} {}, {}({})", mnem, xreg(rd), imm_i, xreg(rs1))
+        }
+        0x23 => {
+            let mnem = match funct3 {
+                0b000 => "sb",
+                0b001 => "sh",
+                0b010 => "sw",
+                _ => "s?",
+            };
+            format!("{} {}, {}({})", mnem, xreg(rs2), imm_s, xreg(rs1))
+        }
+        0x13 => match funct3 {
+            0b000 => format!("addi {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
+            0b010 => format!("slti {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
+            0b011 => format!("sltiu {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
+            0b100 => format!("xori {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
+            0b110 => format!("ori {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
+            0b111 => format!("andi {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
+            0b001 => {
+                let shamt = (inst >> 20) & 0x1f;
+                format!("slli {}, {}, {}", xreg(rd), xreg(rs1), shamt)
+            }
+            0b101 => {
+                let shamt = (inst >> 20) & 0x1f;
+                if funct7 == 0x20 {
+                    format!("srai {}, {}, {}", xreg(rd), xreg(rs1), shamt)
+                } else {
+                    format!("srli {}, {}, {}", xreg(rd), xreg(rs1), shamt)
+                }
+            }
+            _ => "i-unknown".to_string(),
+        },
+        0x33 => {
+            let mnem = match (funct7, funct3) {
+                (0x00, 0b000) => "add",
+                (0x20, 0b000) => "sub",
+                (0x00, 0b001) => "sll",
+                (0x00, 0b010) => "slt",
+                (0x00, 0b011) => "sltu",
+                (0x00, 0b100) => "xor",
+                (0x00, 0b101) => "srl",
+                (0x20, 0b101) => "sra",
+                (0x00, 0b110) => "or",
+                (0x00, 0b111) => "and",
+                (0x01, 0b000) => "mul",
+                (0x01, 0b001) => "mulh",
+                (0x01, 0b010) => "mulhsu",
+                (0x01, 0b011) => "mulhu",
+                (0x01, 0b100) => "div",
+                (0x01, 0b101) => "divu",
+                (0x01, 0b110) => "rem",
+                (0x01, 0b111) => "remu",
+                _ => "r-unknown",
+            };
+            format!("{} {}, {}, {}", mnem, xreg(rd), xreg(rs1), xreg(rs2))
+        }
+        0x73 => {
+            if inst == 0x0000_0073 {
+                "ecall".to_string()
+            } else if inst == 0x0010_0073 {
+                "ebreak".to_string()
+            } else {
+                "system".to_string()
+            }
+        }
+        0x0f => "fence".to_string(),
+        _ => format!("unknown(opcode=0x{:02x})", opcode),
     }
 }
 
@@ -519,7 +743,7 @@ fn respond_html(request: Request, status: u16, body: &str) {
     let _ = request.respond(response);
 }
 
-fn command_from_dap(req: &DapRequest) -> anyhow::Result<VmCommand> {
+fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
     let args = req.arguments.as_ref();
     let cmd = match req.command.as_str() {
         "initialize" => VmCommand::Initialize,
@@ -543,21 +767,19 @@ fn command_from_dap(req: &DapRequest) -> anyhow::Result<VmCommand> {
     Ok(cmd)
 }
 
-fn to_dap_response(request_seq: u64, command: String, reply: VmReply) -> DapResponse {
+fn to_control_response(request_id: u64, command: String, reply: VmReply) -> ControlResponse {
     match reply {
-        VmReply::Error { message } => DapResponse {
-            seq: request_seq.saturating_add(1),
-            response_type: "response",
-            request_seq,
+        VmReply::Error { message } => ControlResponse {
+            id: request_id,
+            seq: request_id,
             success: false,
             command,
             message: Some(message),
             body: Value::Null,
         },
-        other => DapResponse {
-            seq: request_seq.saturating_add(1),
-            response_type: "response",
-            request_seq,
+        other => ControlResponse {
+            id: request_id,
+            seq: request_id,
             success: true,
             command,
             message: None,
@@ -566,7 +788,7 @@ fn to_dap_response(request_seq: u64, command: String, reply: VmReply) -> DapResp
     }
 }
 
-fn handle_dap_request(mut request: Request, tx: &Sender<Envelope>) {
+fn handle_control_request(mut request: Request, tx: &Sender<Envelope>) {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         respond_json(
@@ -577,7 +799,7 @@ fn handle_dap_request(mut request: Request, tx: &Sender<Envelope>) {
         return;
     }
 
-    let parsed: DapRequest = match serde_json::from_str(&body) {
+    let parsed: ControlRequest = match serde_json::from_str(&body) {
         Ok(req) => req,
         Err(e) => {
             respond_json(
@@ -589,24 +811,25 @@ fn handle_dap_request(mut request: Request, tx: &Sender<Envelope>) {
         }
     };
 
-    if parsed.request_type != "request" {
-        respond_json(
-            request,
-            400,
-            &serde_json::json!({ "success": false, "message": "DAP type must be 'request'" }),
-        );
-        return;
+    if let Some(raw_type) = parsed.request_type.as_deref() {
+        if raw_type != "request" {
+            respond_json(
+                request,
+                400,
+                &serde_json::json!({ "success": false, "message": "if provided, type must be 'request'" }),
+            );
+            return;
+        }
     }
 
-    let request_seq = parsed.seq.unwrap_or(0);
+    let request_id = parsed.request_id();
     let command = parsed.command.clone();
-    let cmd = match command_from_dap(&parsed) {
+    let cmd = match command_from_request(&parsed) {
         Ok(cmd) => cmd,
         Err(e) => {
-            let rsp = DapResponse {
-                seq: request_seq.saturating_add(1),
-                response_type: "response",
-                request_seq,
+            let rsp = ControlResponse {
+                id: request_id,
+                seq: request_id,
                 success: false,
                 command,
                 message: Some(e.to_string()),
@@ -628,7 +851,7 @@ fn handle_dap_request(mut request: Request, tx: &Sender<Envelope>) {
         },
     };
 
-    let rsp = to_dap_response(request_seq, parsed.command, reply);
+    let rsp = to_control_response(request_id, parsed.command, reply);
     respond_json(
         request,
         200,
@@ -666,7 +889,7 @@ pub fn serve(
         .map_err(|e| anyhow!("Failed to bind debug UI server at {bind_addr}: {e}"))?;
 
     println!("Debug UI listening on http://{bind_addr}");
-    println!("Use /api/dap for DAP-style control messages.");
+    println!("Use /api/v1/control for control messages.");
 
     for request in server.incoming_requests() {
         let method = request.method().clone();
@@ -674,14 +897,14 @@ pub fn serve(
 
         match (method, url.as_str()) {
             (Method::Get, "/") => respond_html(request, 200, UI_HTML),
-            (Method::Post, "/api/dap") => handle_dap_request(request, &tx),
+            (Method::Post, "/api/v1/control") => handle_control_request(request, &tx),
             _ => respond_json(
                 request,
                 404,
                 &serde_json::json!({
                     "success": false,
                     "message": "not found",
-                    "hint": "use GET / or POST /api/dap"
+                    "hint": "use GET / or POST /api/v1/control"
                 }),
             ),
         }

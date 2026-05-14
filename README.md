@@ -74,38 +74,16 @@ When enabled:
 - You can load binaries dynamically from the UI
 - You can run, pause, step, and reset execution
 - You can inspect registers, PC, and memory while the simulation runs
+- You can inspect the current instruction at the active PC
 - VM control happens through message passing to a dedicated VM worker thread
 
-The debug API is exposed via `POST /api/dap` using DAP-style request/response messages.
-
-Native DAP transport is also exposed on `127.0.0.1:8582` (or `--dap-port`) using standard
-Debug Adapter Protocol framing (`Content-Length` + JSON payload).
-
-Implemented DAP requests include:
-
-- `initialize`
-- `launch` / `attach` (binary path via `program` or `path`)
-- `configurationDone`
-- `threads`
-- `stackTrace`
-- `scopes`
-- `variables`
-- `continue`
-- `pause`
-- `next` / `stepIn` / `stepOut`
-- `restart`
-- `readMemory`
-- `setBreakpoints` (returns unverified/empty breakpoints for now)
-- `disconnect` / `terminate`
-
-Emitted DAP events include `initialized`, `continued`, `stopped`, and `terminated`.
+The control API is exposed via `POST /api/v1/control`.
 
 Example request:
 
 ```json
 {
-  "seq": 1,
-  "type": "request",
+  "id": 1,
   "command": "readMemory",
   "arguments": {
     "addr": "0x1000",
@@ -115,6 +93,10 @@ Example request:
 ```
 
 Supported commands include: `initialize`, `launch`, `continue`, `pause`, `next`, `restart`, `readMemory`, `state`, `disconnect`.
+
+The `state` response includes instruction metadata at `state.current_instruction`,
+`state.current_instruction_hex`, `state.current_instruction_size`, and
+`state.current_instruction_bytes`.
 
 The runtime always loads built-in defaults from `src/default.toml` and merges them with the file passed through `--config`.
 Only the keys you provide need to be overridden.

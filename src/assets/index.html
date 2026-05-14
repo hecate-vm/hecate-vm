@@ -242,6 +242,10 @@
                 <div id="stop" class="mono"></div>
             </div>
             <div class="kv">
+                <div>Current Instruction</div>
+                <div id="instr" class="mono"></div>
+            </div>
+            <div class="kv">
                 <div>Cycles</div>
                 <div id="cycles" class="mono"></div>
             </div>
@@ -275,14 +279,13 @@
             return Number.parseInt(v, 10);
         }
 
-        async function dap(command, args = {}) {
+        async function control(command, args = {}) {
             const payload = {
-                seq: seq++,
-                type: 'request',
+                id: seq++,
                 command,
                 arguments: args,
             };
-            const res = await fetch('/api/dap', {
+            const res = await fetch('/api/v1/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
@@ -313,7 +316,7 @@
 
         async function refresh() {
             try {
-                const body = await dap('state');
+                const body = await control('state');
                 const s = body.state;
                 if (!s) return;
 
@@ -322,6 +325,7 @@
                 document.getElementById('entry').textContent = s.entry_hex;
                 document.getElementById('loaded').textContent = s.loaded_path || '(none)';
                 document.getElementById('stop').textContent = s.last_stop_reason;
+                document.getElementById('instr').textContent = s.current_instruction;
                 document.getElementById('cycles').textContent = String(s.stats.cycles);
                 document.getElementById('instret').textContent = String(s.stats.instret);
                 document.getElementById('syscalls').textContent = String(s.stats.syscall_count);
@@ -340,7 +344,7 @@
         document.getElementById('btn-load').addEventListener('click', async () => {
             const path = document.getElementById('bin-path').value.trim();
             try {
-                const body = await dap('launch', { path });
+                const body = await control('launch', { path });
                 showMsg(`Loaded: entry ${body.entry_hex || ''}`);
                 await refresh();
             } catch (err) {
@@ -350,7 +354,7 @@
 
         document.getElementById('btn-run').addEventListener('click', async () => {
             try {
-                await dap('continue');
+                await control('continue');
                 showMsg('Running');
             } catch (err) {
                 showMsg(err.message || String(err), true);
@@ -359,7 +363,7 @@
 
         document.getElementById('btn-pause').addEventListener('click', async () => {
             try {
-                await dap('pause');
+                await control('pause');
                 showMsg('Paused');
                 await refresh();
             } catch (err) {
@@ -370,7 +374,7 @@
         document.getElementById('btn-step').addEventListener('click', async () => {
             try {
                 const count = Math.max(1, parseMaybeHex(document.getElementById('step-count').value) || 1);
-                await dap('next', { count });
+                await control('next', { count });
                 await refresh();
             } catch (err) {
                 showMsg(err.message || String(err), true);
@@ -379,7 +383,7 @@
 
         document.getElementById('btn-reset').addEventListener('click', async () => {
             try {
-                await dap('restart');
+                await control('restart');
                 showMsg('Reset complete');
                 await refresh();
             } catch (err) {
@@ -391,7 +395,7 @@
             const addr = parseMaybeHex(document.getElementById('mem-addr').value);
             const len = parseMaybeHex(document.getElementById('mem-len').value);
             try {
-                const body = await dap('readMemory', { addr, len });
+                const body = await control('readMemory', { addr, len });
                 const bytes = body.bytes || [];
                 let lines = [];
                 for (let i = 0; i < bytes.length; i += 16) {
