@@ -414,13 +414,13 @@
             return window.location.hostname.endsWith('github.io');
         }
 
-        function defaultWsUrl() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = window.location.hostname || '127.0.0.1';
-            const port = Number.parseInt(window.location.port || '0', 10);
-            const wsPort = Number.isFinite(port) && port > 0 ? String(port + 1) : '8582';
-            return `${protocol}//${host}:${wsPort}`;
-        }
+        // function defaultWsUrl() {
+        //     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        //     const host = window.location.hostname || '127.0.0.1';
+        //     const port = Number.parseInt(window.location.port || '0', 10);
+        //     const wsPort = Number.isFinite(port) && port > 0 ? String(port + 1) : '8582';
+        //     return `${protocol}//${host}:${wsPort}`;
+        // }
 
         function bytesToBase64(bytes) {
             let binary = '';
@@ -947,7 +947,7 @@
         document.getElementById('refresh-ms').addEventListener('change', restartTimer);
 
         async function boot() {
-            const wsUrl = defaultWsUrl();
+            const wsUrl = 'ws://127.0.0.1:8582'; // defaultWsUrl();
             document.getElementById('ws-url').value = wsUrl;
             showMsg('UI ready. Connecting to the local VM...');
 
