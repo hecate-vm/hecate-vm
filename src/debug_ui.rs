@@ -12,7 +12,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use tungstenite::{Message, accept};
 
 use crate::vm::{
-    HecateVm, MemoryReadResult, ResetMemoryPolicy, SimConfig, VmDump, VmRuntimeOptions,
+    HecateVm, IoMode, MemoryReadResult, ResetMemoryPolicy, SimConfig, VmDump, VmRuntimeOptions,
 };
 
 const UI_HTML: &str = include_str!("assets/index.html");
@@ -279,7 +279,7 @@ fn worker_loop(
     options: VmRuntimeOptions,
     config: SimConfig,
 ) -> anyhow::Result<()> {
-    let mut vm = HecateVm::new(options, config);
+    let mut vm = HecateVm::new(options, config, IoMode::Buffer);
     if let Some(path) = initial_path {
         vm.load_file(&path)?;
     }
@@ -311,7 +311,7 @@ fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
     let reply = match env.cmd {
         VmCommand::Initialize => VmReply::Ack,
         VmCommand::Unload => {
-            *vm = HecateVm::new(vm.options().clone(), vm.config().clone());
+            *vm = HecateVm::new(vm.options().clone(), vm.config().clone(), vm.io_mode());
             VmReply::Ack
         }
         VmCommand::Examples => VmReply::Examples {
@@ -575,6 +575,7 @@ fn respond_text(request: Request, status: u16, body: &str, content_type: &str) {
     let _ = request.respond(response);
 }
 
+#[cfg(feature = "http_control_api")]
 fn handle_examples_request(request: Request) {
     respond_json(
         request,
@@ -710,7 +711,7 @@ pub fn serve(
         }
     });
 
-    println!("Remote Control: ws://127.0.0.1:{ws_port} for websocket control.");
+    println!("Remote Control: ws://127.0.0.1:{ws_port}");
     println!("Debug Console : http://{bind_addr}");
 
     for request in server.incoming_requests() {
@@ -719,19 +720,30 @@ pub fn serve(
 
         match (method, url.as_str()) {
             (Method::Get, "/") => respond_html(request, 200, UI_HTML),
-            (Method::Get, "/api/v1/examples") => handle_examples_request(request),
             (Method::Get, "/assets/wasm/hecate_vm_wasm.js") => {
                 respond_text(request, 200, WASM_SHIM_JS, "text/javascript; charset=utf-8")
             }
             #[cfg(feature = "http_control_api")]
-            (Method::Post, "/api/v1/control") => handle_control_request(request, &tx),
+            (method, endpoint) if let Some(command) = endpoint.strip_prefix("/api/v1/") => {
+                match (method, command) {
+                    (Method::Get, "examples") => handle_examples_request(request),
+                    (Method::Post, "control") => handle_control_request(request, &tx),
+                    _ => respond_json(
+                        request,
+                        404,
+                        &serde_json::json!({
+                            "success": false,
+                            "message": "not found",
+                        }),
+                    ),
+                }
+            }
             _ => respond_json(
                 request,
                 404,
                 &serde_json::json!({
                     "success": false,
                     "message": "not found",
-                    "hint": "use GET /, GET /api/v1/examples, GET /assets/wasm/hecate_vm_wasm.js, or POST /api/v1/control"
                 }),
             ),
         }

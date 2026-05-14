@@ -262,6 +262,7 @@ pub struct VmState {
     pub floating_registers: [u64; 32],
     pub fcsr: u32,
     pub reservation: Option<u32>,
+    pub io_output: Vec<String>,
     pub stats: RunStats,
 }
 
@@ -294,6 +295,8 @@ pub struct VmDump {
     pub running: bool,
     pub halted: bool,
     pub stop_reason: VmStopReason,
+    #[serde(default)]
+    pub io_output: Vec<String>,
     pub cpu: CpuSnapshot,
     pub stats: RunStats,
     pub memory: VmMemoryDump,
@@ -420,6 +423,12 @@ impl CacheHierarchy {
         self.l3.insert(line);
         self.store_latency
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum IoMode {
+    Stdout,
+    Buffer,
 }
 
 #[derive(Debug)]
@@ -792,6 +801,8 @@ fn handle_syscall(
     state: &mut CpuState,
     memory: &HecateMemory,
     config: &SimConfig,
+    io_mode: IoMode,
+    io_output: &mut Vec<String>,
     code: u32,
 ) -> (bool, u64, u64) {
     match code {
@@ -802,9 +813,14 @@ fn handle_syscall(
 
             if fd == 1 || fd == 2 {
                 let bytes = memory.read_program_bytes(buf_addr, len);
-                let mut out = std::io::stdout().lock();
-                let _ = out.write_all(&bytes);
-                let _ = out.flush();
+                if io_mode == IoMode::Stdout {
+                    let mut out = std::io::stdout().lock();
+                    let _ = out.write_all(&bytes);
+                    let _ = out.flush();
+                }
+                if io_mode == IoMode::Buffer {
+                    io_output.push(String::from_utf8_lossy(&bytes).to_string());
+                }
                 state.x[10] = len;
                 let io_bytes = len as u64;
                 let extra_cycles = io_bytes.wrapping_mul(config.io_cycles_per_byte);
@@ -831,11 +847,13 @@ pub struct HecateVm {
     halted: bool,
     running: bool,
     stop_reason: VmStopReason,
+    io_mode: IoMode,
+    io_output: Vec<String>,
     breakpoints: HashSet<u32>,
 }
 
 impl HecateVm {
-    pub fn new(options: VmRuntimeOptions, config: SimConfig) -> Self {
+    pub fn new(options: VmRuntimeOptions, config: SimConfig, io_mode: IoMode) -> Self {
         let shared_stats = Rc::new(RefCell::new(RunStats::default()));
         let memory = HecateMemory::new(Rc::clone(&shared_stats), options, &config);
         let clock = HecateClock::new(Rc::clone(&shared_stats), options.max_instructions);
@@ -852,6 +870,8 @@ impl HecateVm {
             halted: true,
             running: false,
             stop_reason: VmStopReason::NoProgramLoaded,
+            io_mode,
+            io_output: Vec::new(),
             breakpoints: HashSet::new(),
         }
     }
@@ -862,6 +882,10 @@ impl HecateVm {
 
     pub fn config(&self) -> &SimConfig {
         &self.config
+    }
+
+    pub fn io_mode(&self) -> IoMode {
+        self.io_mode
     }
 
     pub fn is_running(&self) -> bool {
@@ -901,6 +925,7 @@ impl HecateVm {
         self.clear_stats();
         self.reset_clock_and_caches();
         self.memory.clear_bytes();
+        self.io_output.clear();
 
         let name = name.into();
         let entry = load_elf_bytes(&name, blob, &mut self.memory)?;
@@ -1056,6 +1081,7 @@ impl HecateVm {
             floating_registers: self.state.f.map(|value| value.0),
             fcsr: self.state.fcsr,
             reservation: self.state.reservation,
+            io_output: self.io_output.clone(),
             stats: self.shared_stats.borrow().clone(),
         }
     }
@@ -1064,6 +1090,7 @@ impl HecateVm {
         self.clear_stats();
         self.reset_clock_and_caches();
         self.running = false;
+        self.io_output.clear();
 
         match policy {
             ResetMemoryPolicy::Ignore => {}
@@ -1096,6 +1123,7 @@ impl HecateVm {
             running: self.running,
             halted: self.halted,
             stop_reason: self.stop_reason.clone(),
+            io_output: self.io_output.clone(),
             cpu: CpuSnapshot::from_cpu_state(&self.state),
             stats: self.shared_stats.borrow().clone(),
             memory: self.memory.dump(),
@@ -1110,6 +1138,7 @@ impl HecateVm {
         self.running = dump.running;
         self.halted = dump.halted;
         self.stop_reason = dump.stop_reason;
+        self.io_output = dump.io_output;
         self.shared_stats = Rc::new(RefCell::new(dump.stats));
         self.state = dump.cpu.into_cpu_state();
         self.memory = HecateMemory::from_dump(
@@ -1164,8 +1193,14 @@ impl HecateVm {
                             syscall_cycles;
                     }
 
-                    let (should_continue, extra_cycles, io_bytes_written) =
-                        handle_syscall(&mut self.state, &self.memory, &self.config, syscall_code);
+                    let (should_continue, extra_cycles, io_bytes_written) = handle_syscall(
+                        &mut self.state,
+                        &self.memory,
+                        &self.config,
+                        self.io_mode,
+                        &mut self.io_output,
+                        syscall_code,
+                    );
 
                     if extra_cycles != 0 || io_bytes_written != 0 {
                         let mut stats = self.shared_stats.borrow_mut();

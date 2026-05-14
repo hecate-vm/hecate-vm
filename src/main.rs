@@ -6,7 +6,8 @@ mod native_main {
     use clap::{Parser, Subcommand};
     use hecate_vm::debug_ui;
     use hecate_vm::vm::{
-        HecateVm, SimConfig, SimConfigRaw, VmRuntimeOptions, load_config, syscall_cycles_for,
+        HecateVm, IoMode, SimConfig, SimConfigRaw, VmRuntimeOptions, load_config,
+        syscall_cycles_for,
     };
 
     const DEFAULT_CONFIG: &str = include_str!("default.toml");
@@ -123,7 +124,7 @@ mod native_main {
         dump_registers: bool,
         config: SimConfig,
     ) -> anyhow::Result<()> {
-        let mut vm = HecateVm::new(options, config.clone());
+        let mut vm = HecateVm::new(options, config.clone(), IoMode::Stdout);
         vm.load_file(&path)?;
         vm.run()?;
         while vm.is_running() {

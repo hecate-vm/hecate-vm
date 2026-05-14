@@ -157,6 +157,33 @@
             line-height: 1.35;
         }
 
+        .io-panel {
+            margin-top: 14px;
+        }
+
+        .io-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+            align-items: start;
+        }
+
+        #io-output {
+            width: 100%;
+            min-height: 140px;
+            max-height: 240px;
+            resize: vertical;
+            border: 1px solid #eadfce;
+            border-radius: 10px;
+            background: #fff;
+            padding: 10px;
+            font-family: var(--mono);
+            font-size: 0.84rem;
+            line-height: 1.35;
+            overflow: auto;
+            color: var(--ink);
+        }
+
         .status {
             display: inline-block;
             padding: 5px 9px;
@@ -285,6 +312,15 @@
         </section>
     </div>
 
+    <section class="card io-panel">
+        <h2>IO Output</h2>
+        <div class="io-row">
+            <textarea id="io-output" readonly spellcheck="false"
+                placeholder="Program output will appear here"></textarea>
+            <button id="btn-clear-io">Clear</button>
+        </div>
+    </section>
+
     <script>
         const categories = {
             "arithmetic": ["add", "addi", "neg", "sub", "mul", "mulh", "mulhu", "mulhsu", "div", "rem"],
@@ -304,6 +340,7 @@
         let currentSnapshot = null;
         let availableExamples = [];
         let lastExamplesSignature = null;
+        let ioClearBase = 0;
         const LOCAL_WS_URL = 'ws://127.0.0.1:8582';
 
         function formatHex32(value) {
@@ -401,6 +438,17 @@
             return out;
         }
 
+        function renderIoOutput(state) {
+            const el = document.getElementById('io-output');
+            const messages = state ? state.ioOutput : '';
+            const output = Array.isArray(messages) ? messages.join('\n') : String(messages || '');
+            if (ioClearBase > output.length) {
+                ioClearBase = 0;
+            }
+            el.value = output.slice(ioClearBase);
+            el.scrollTop = el.scrollHeight;
+        }
+
         function updateStatusPill(running) {
             const el = document.getElementById('status-pill');
             el.className = 'status ' + (running ? 'running' : 'paused');
@@ -428,6 +476,7 @@
 
         function clearSnapshotView() {
             currentSnapshot = null;
+            ioClearBase = 0;
             updateStatusPill(false);
             document.getElementById('pc').textContent = '';
             document.getElementById('entry').textContent = '';
@@ -438,6 +487,7 @@
             document.getElementById('instret').textContent = '';
             document.getElementById('syscalls').textContent = '';
             document.getElementById('regs').textContent = '';
+            document.getElementById('io-output').value = '';
         }
 
         function isPagesSite() {
@@ -782,6 +832,7 @@
                 document.getElementById('instret').textContent = String(state.stats.instret);
                 document.getElementById('syscalls').textContent = String(state.stats.syscall_count);
                 document.getElementById('regs').textContent = renderRegs(state.registers, state.pc);
+                renderIoOutput(state);
                 renderExamples();
             } catch (error) {
                 showMsg(error, true);
@@ -929,6 +980,14 @@
             } catch (error) {
                 showMsg(error, true);
             }
+        });
+
+        document.getElementById('btn-clear-io').addEventListener('click', () => {
+            const output = currentSnapshot && typeof currentSnapshot.ioOutput === 'string'
+                ? currentSnapshot.ioOutput
+                : '';
+            ioClearBase = output.length;
+            document.getElementById('io-output').value = '';
         });
 
         document.getElementById('refresh-ms').addEventListener('change', restartTimer);

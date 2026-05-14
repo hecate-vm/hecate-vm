@@ -83,8 +83,7 @@ The browser UI supports two execution modes with the same controls:
 - `Connect to local Hecate VM` (websocket/HTTP control API)
 - `Run in browser (WASM)` (loads a browser runtime module)
 
-The UI includes an examples dropdown. In local mode it comes from `GET /api/v1/examples`.
-In browser mode it comes from `GET /assets/examples.json`.
+The UI includes an examples dropdown.
 
 Example binaries are feature-gated at build time. Enable one or more of these Cargo features to embed them into the VM:
 
