@@ -67,7 +67,7 @@ enum VmCommand {
     Write { addr: u32, bytes: Vec<u8> },
     State,
     Dump,
-    Restore { dump: VmDump },
+    Restore { dump: Box<VmDump> },
     Shutdown,
 }
 
@@ -90,7 +90,7 @@ enum VmReply {
         result: MemoryReadResult,
     },
     Dump {
-        dump: VmDump,
+        dump: Box<VmDump>,
     },
     Error {
         message: String,
@@ -311,7 +311,7 @@ fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
     let reply = match env.cmd {
         VmCommand::Initialize => VmReply::Ack,
         VmCommand::Unload => {
-            *vm = HecateVm::new(vm.options().clone(), vm.config().clone(), vm.io_mode());
+            *vm = HecateVm::new(vm.options(), vm.config().clone(), vm.io_mode());
             VmReply::Ack
         }
         VmCommand::Examples => VmReply::Examples {
@@ -403,8 +403,10 @@ fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
             },
         },
         VmCommand::State => state_value(vm),
-        VmCommand::Dump => VmReply::Dump { dump: vm.dump() },
-        VmCommand::Restore { dump } => match vm.restore(dump) {
+        VmCommand::Dump => VmReply::Dump {
+            dump: Box::new(vm.dump()),
+        },
+        VmCommand::Restore { dump } => match vm.restore(*dump) {
             Ok(state) => VmReply::State {
                 state: serde_json::to_value(state)
                     .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
@@ -476,7 +478,7 @@ fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
         "state" => VmCommand::State,
         "dump" => VmCommand::Dump,
         "restore" => VmCommand::Restore {
-            dump: parse_dump_value(args)?,
+            dump: Box::new(parse_dump_value(args)?),
         },
         "shutdown" => VmCommand::Shutdown,
         other => return Err(anyhow!("unsupported control command: {other}")),
@@ -509,17 +511,17 @@ fn process_control_request(parsed: ControlRequest, tx: &Sender<Envelope>) -> Con
     let request_id = parsed.request_id();
     let command = parsed.command.clone();
 
-    if let Some(raw_type) = parsed.request_type.as_deref() {
-        if raw_type != "request" {
-            return ControlResponse {
-                id: request_id,
-                seq: request_id,
-                success: false,
-                command,
-                message: Some("if provided, type must be 'request'".to_string()),
-                body: Value::Null,
-            };
-        }
+    if let Some(raw_type) = parsed.request_type.as_deref()
+        && raw_type != "request"
+    {
+        return ControlResponse {
+            id: request_id,
+            seq: request_id,
+            success: false,
+            command,
+            message: Some("if provided, type must be 'request'".to_string()),
+            body: Value::Null,
+        };
     }
 
     let cmd = match command_from_request(&parsed) {
@@ -641,7 +643,7 @@ fn handle_ws_client(stream: TcpStream, tx: Sender<Envelope>) -> anyhow::Result<(
                     "message": format!("invalid JSON: {e}"),
                     "body": null
                 });
-                let _ = socket.send(Message::Text(bad.to_string().into()));
+                let _ = socket.send(Message::Text(bad.to_string()));
                 continue;
             }
         };
@@ -658,7 +660,7 @@ fn handle_ws_client(stream: TcpStream, tx: Sender<Envelope>) -> anyhow::Result<(
             })
             .to_string()
         });
-        socket.send(Message::Text(payload.into()))?;
+        socket.send(Message::Text(payload))?;
     }
 
     Ok(())
@@ -755,4 +757,81 @@ pub fn serve(
         .map_err(|_| anyhow!("VM worker thread panicked"))??;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::SimConfigRaw;
+
+    fn test_config() -> SimConfig {
+        toml::from_str::<SimConfigRaw>(include_str!("default.toml"))
+            .expect("default config should parse")
+            .resolve()
+            .expect("default config should resolve")
+    }
+
+    fn test_options() -> VmRuntimeOptions {
+        VmRuntimeOptions {
+            cache_line_size: 64,
+            l1_size: 32 * 1024,
+            l2_size: 256 * 1024,
+            l3_size: 8 * 1024 * 1024,
+            max_instructions: None,
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_request_type_before_dispatch() {
+        let (tx, _rx) = channel::<Envelope>();
+        let response = process_control_request(
+            ControlRequest {
+                id: Some(7),
+                request_type: Some("event".to_string()),
+                command: "state".to_string(),
+                arguments: None,
+            },
+            &tx,
+        );
+
+        assert!(!response.success);
+        assert_eq!(response.id, 7);
+        assert_eq!(
+            response.message.as_deref(),
+            Some("if provided, type must be 'request'")
+        );
+    }
+
+    #[test]
+    fn recognizes_current_restore_command() {
+        let dump = HecateVm::new(test_options(), test_config(), IoMode::Buffer).dump();
+        let cmd = command_from_request(&ControlRequest {
+            id: Some(1),
+            request_type: Some("request".to_string()),
+            command: "restore".to_string(),
+            arguments: Some(serde_json::json!({
+                "dump": dump
+            })),
+        })
+        .expect("restore should parse");
+
+        assert!(matches!(cmd, VmCommand::Restore { .. }));
+    }
+
+    #[test]
+    fn worker_handles_dump_and_shutdown_commands() {
+        let (tx, rx) = channel::<Envelope>();
+        let worker = thread::spawn(move || worker_loop(rx, None, test_options(), test_config()));
+
+        let dump = send_command(&tx, VmCommand::Dump).expect("dump command should succeed");
+        assert!(matches!(dump, VmReply::Dump { .. }));
+
+        let shutdown = send_command(&tx, VmCommand::Shutdown).expect("shutdown should succeed");
+        assert!(matches!(shutdown, VmReply::Ack));
+
+        worker
+            .join()
+            .expect("worker thread should not panic")
+            .expect("worker should exit cleanly");
+    }
 }

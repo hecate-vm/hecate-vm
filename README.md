@@ -3,7 +3,7 @@
 Quick run:
 
 ```bash
-./scripts/run_sample_rv32.sh
+./scripts/run_sample.sh
 ```
 
 - [Where does the name come from?](#where-does-the-name-come-from)
@@ -110,7 +110,7 @@ Example request:
 }
 ```
 
-Supported commands include: `initialize`, `load`, `continue`, `pause`, `step`, `reset`, `read`, `state`, `shutdown`.
+Supported commands include: `initialize`, `unload`, `examples`, `load`, `run`, `pause`, `step`, `step_over`, `step_out`, `reset`, `read`, `write`, `state`, `dump`, `restore`, and `shutdown`.
 
 The `state` response includes instruction metadata at `state.current_instruction`,
 `state.current_instruction_hex`, `state.current_instruction_size`, and

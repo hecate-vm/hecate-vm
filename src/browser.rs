@@ -239,14 +239,14 @@ fn error_response(id: u64, command: String, message: String) -> ControlResponse 
 
 impl HecateVmWasm {
     fn execute(&mut self, req: ControlRequest) -> Result<ControlResponse, JsValue> {
-        if let Some(raw_type) = req.request_type.as_deref() {
-            if raw_type != "request" {
-                return Ok(error_response(
-                    req.id.unwrap_or(0),
-                    req.command,
-                    "if provided, type must be 'request'".to_string(),
-                ));
-            }
+        if let Some(raw_type) = req.request_type.as_deref()
+            && raw_type != "request"
+        {
+            return Ok(error_response(
+                req.id.unwrap_or(0),
+                req.command,
+                "if provided, type must be 'request'".to_string(),
+            ));
         }
 
         let id = req.id.unwrap_or(0);

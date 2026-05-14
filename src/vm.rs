@@ -335,10 +335,10 @@ impl CacheLevel {
             return;
         }
 
-        if self.lines.len() >= self.capacity_lines {
-            if let Some(evicted) = self.lines.pop_back() {
-                self.line_set.remove(&evicted);
-            }
+        if self.lines.len() >= self.capacity_lines
+            && let Some(evicted) = self.lines.pop_back()
+        {
+            self.line_set.remove(&evicted);
         }
         self.lines.push_front(line);
         self.line_set.insert(line);
@@ -1492,11 +1492,9 @@ fn decode_instruction(memory: &HecateMemory, pc: u32) -> DecodedInstruction {
         let rs1 = ((halfword >> 7) & 0x1f) as u32;
         let rs2 = ((halfword >> 2) & 0x1f) as u32;
         let bit12 = ((halfword >> 12) & 0x1) != 0;
-        let flow = if quadrant == 0b01 && funct3 == 0b001 {
-            InstructionFlow::Call {
-                return_pc: pc.wrapping_add(2),
-            }
-        } else if quadrant == 0b10 && funct3 == 0b100 && bit12 && rs2 == 0 && rs1 != 0 {
+        let is_compressed_call = (quadrant == 0b01 && funct3 == 0b001)
+            || (quadrant == 0b10 && funct3 == 0b100 && bit12 && rs2 == 0 && rs1 != 0);
+        let flow = if is_compressed_call {
             InstructionFlow::Call {
                 return_pc: pc.wrapping_add(2),
             }
@@ -1535,17 +1533,12 @@ fn decode_instruction(memory: &HecateMemory, pc: u32) -> DecodedInstruction {
     let opcode = raw & 0x7f;
     let rd = (raw >> 7) & 0x1f;
     let funct3 = (raw >> 12) & 0x7;
-    let rs1 = (raw >> 15) & 0x1f;
-    let flow = if opcode == 0x6f && (rd == 1 || rd == 5) {
+    let is_call = (opcode == 0x6f && (rd == 1 || rd == 5))
+        || (opcode == 0x67 && funct3 == 0 && (rd == 1 || rd == 5));
+    let flow = if is_call {
         InstructionFlow::Call {
             return_pc: pc.wrapping_add(4),
         }
-    } else if opcode == 0x67 && funct3 == 0 && (rd == 1 || rd == 5) {
-        InstructionFlow::Call {
-            return_pc: pc.wrapping_add(4),
-        }
-    } else if opcode == 0x67 && funct3 == 0 && rd == 0 && rs1 == 1 {
-        InstructionFlow::Linear
     } else {
         InstructionFlow::Linear
     };
