@@ -929,14 +929,6 @@ fn handle_examples_request(request: Request) {
     );
 }
 
-fn handle_examples_manifest_request(request: Request) {
-    respond_json(
-        request,
-        200,
-        &serde_json::json!({ "examples": builtin_examples() }),
-    );
-}
-
 fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
     let args = req.arguments.as_ref();
     let cmd = match req.command.as_str() {
@@ -1140,7 +1132,6 @@ pub fn serve(
         match (method, url.as_str()) {
             (Method::Get, "/") => respond_html(request, 200, UI_HTML),
             (Method::Get, "/api/v1/examples") => handle_examples_request(request),
-            (Method::Get, "/assets/examples.json") => handle_examples_manifest_request(request),
             (Method::Get, "/assets/wasm/hecate_vm_wasm.js") => {
                 respond_text(request, 200, WASM_SHIM_JS, "text/javascript; charset=utf-8")
             }
@@ -1151,7 +1142,7 @@ pub fn serve(
                 &serde_json::json!({
                     "success": false,
                     "message": "not found",
-                    "hint": "use GET /, GET /api/v1/examples, GET /assets/examples.json, GET /assets/wasm/hecate_vm_wasm.js, or POST /api/v1/control"
+                    "hint": "use GET /, GET /api/v1/examples, GET /assets/wasm/hecate_vm_wasm.js, or POST /api/v1/control"
                 }),
             ),
         }
