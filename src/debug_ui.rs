@@ -762,7 +762,7 @@ fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
         },
         "state" | "registers" => VmCommand::State,
         "disconnect" | "shutdown" => VmCommand::Shutdown,
-        other => return Err(anyhow!("unsupported DAP command: {other}")),
+        other => return Err(anyhow!("unsupported control command: {other}")),
     };
     Ok(cmd)
 }

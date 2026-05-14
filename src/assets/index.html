@@ -84,6 +84,17 @@
             font-family: var(--mono);
         }
 
+        .mnemonic-link {
+            color: #8a2f18;
+            font-weight: 700;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+
+        .mnemonic-link:hover {
+            color: #bf3a16;
+        }
+
         .controls {
             display: flex;
             flex-wrap: wrap;
@@ -314,6 +325,35 @@
             el.textContent = running ? 'Running' : 'Paused';
         }
 
+        function docsUrlForMnemonic(mnemonic) {
+            return `https://duckduckgo.com/?q=${encodeURIComponent(`RISC-V ${mnemonic} instruction`)}`;
+        }
+
+        function renderInstructionWithLink(rawInstruction) {
+            const container = document.getElementById('instr');
+            container.textContent = '';
+
+            const text = String(rawInstruction || 'Unavailable').trim();
+            const match = text.match(/^([a-z][a-z0-9.]*)\b(.*)$/i);
+            if (!match) {
+                container.textContent = text;
+                return;
+            }
+
+            const mnemonic = match[1];
+            const rest = match[2] || '';
+
+            const link = document.createElement('a');
+            link.className = 'mnemonic-link';
+            link.href = docsUrlForMnemonic(mnemonic);
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = mnemonic;
+
+            container.appendChild(link);
+            container.appendChild(document.createTextNode(rest));
+        }
+
         async function refresh() {
             try {
                 const body = await control('state');
@@ -325,7 +365,7 @@
                 document.getElementById('entry').textContent = s.entry_hex;
                 document.getElementById('loaded').textContent = s.loaded_path || '(none)';
                 document.getElementById('stop').textContent = s.last_stop_reason;
-                document.getElementById('instr').textContent = s.current_instruction;
+                renderInstructionWithLink(s.current_instruction);
                 document.getElementById('cycles').textContent = String(s.stats.cycles);
                 document.getElementById('instret').textContent = String(s.stats.instret);
                 document.getElementById('syscalls').textContent = String(s.stats.syscall_count);
