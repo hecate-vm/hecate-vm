@@ -442,6 +442,7 @@
 
         function makeWasmAdapter() {
             let runtime = null;
+            let initialized = false;
 
             async function ensureRuntime() {
                 if (runtime) {
@@ -450,6 +451,11 @@
 
                 const moduleUrl = new URL('assets/wasm/hecate_vm_wasm.js', window.location.href).href;
                 const module = await import(moduleUrl);
+                if (!initialized && typeof module.default === 'function') {
+                    const wasmBinaryUrl = new URL('assets/wasm/hecate_vm_wasm_bg.wasm', window.location.href).href;
+                    await module.default(wasmBinaryUrl);
+                    initialized = true;
+                }
                 if (module.createHecateVm) {
                     runtime = await module.createHecateVm();
                 } else if (module.HecateVmWasm) {
@@ -590,6 +596,7 @@
             }
             adapter = nextAdapter;
             await adapter.connect();
+            restartTimer();
             availableExamples = await adapter.listExamples().catch(() => []);
             renderExamples();
             if (message) {
@@ -683,6 +690,9 @@
         }
 
         async function refresh() {
+            if (!adapter) {
+                return;
+            }
             try {
                 const body = await control('state');
                 const state = body.state;
@@ -855,7 +865,6 @@
         async function boot() {
             const wsUrl = defaultWsUrl();
             document.getElementById('ws-url').value = wsUrl;
-            restartTimer();
             showMsg('UI ready. Connecting to the local VM...');
 
             await wait(0);
