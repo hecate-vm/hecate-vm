@@ -436,6 +436,10 @@
             return new Promise((resolve) => setTimeout(resolve, ms));
         }
 
+        function isPagesSite() {
+            return window.location.hostname === 'hecate-vm.github.io' || window.location.hostname.endsWith('.github.io');
+        }
+
         function makeWasmAdapter() {
             let runtime = null;
 
@@ -444,7 +448,8 @@
                     return runtime;
                 }
 
-                const module = await import('./assets/wasm/hecate_vm_wasm.js');
+                const moduleUrl = new URL('assets/wasm/hecate_vm_wasm.js', window.location.href).href;
+                const module = await import(moduleUrl);
                 if (module.createHecateVm) {
                     runtime = await module.createHecateVm();
                 } else if (module.HecateVmWasm) {
@@ -854,6 +859,11 @@
             showMsg('UI ready. Connecting to the local VM...');
 
             await wait(0);
+            if (isPagesSite()) {
+                await fallbackToWasm('GitHub Pages detected; using the in-browser VM');
+                return;
+            }
+
             await connectToRemoteOrFallback(wsUrl);
         }
 

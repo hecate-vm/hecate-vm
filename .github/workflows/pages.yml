@@ -39,7 +39,12 @@ jobs:
 
       - name: Build wasm package
         run: |
-          wasm-pack build --target web --out-dir "${WASM_PKG_DIR}"
+          wasm-pack build --target web --out-dir "${WASM_PKG_DIR}" --out-name hecate_vm_wasm
+
+      - name: Verify wasm web entrypoint exists
+        run: |
+          test -f "${WASM_PKG_DIR}/hecate_vm_wasm.js"
+          test -f "${WASM_PKG_DIR}/hecate_vm_wasm_bg.wasm"
 
       - name: Stage GitHub Pages files
         run: |
