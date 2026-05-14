@@ -103,6 +103,16 @@ Rust runtime helper crate:
 - `runtime/rust/hecate_runtime/` (no_std helpers for write/exit + print macros)
 - `examples/rust_hello/` (minimal no_std + no_main RV32 example)
 
+Nix development shell:
+
+```bash
+nix develop
+# or
+nix-shell
+```
+
+The shell provides Rust nightly tooling, `rust-src`, CMake, Clang, LLD, and the other dependencies used by the build scripts.
+
 If you have GCC cross-compilers installed, you can use one of these instead:
 
 - `runtime/cmake/toolchains/riscv32-none-elf-gcc.cmake`
