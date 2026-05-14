@@ -61,5 +61,23 @@
 		"vaddr",
 		"Zunstable"
 	],
-	"sarif-viewer.connectToGithubCodeScanning": "off"
+	"sarif-viewer.connectToGithubCodeScanning": "off",
+	"python.autoComplete.extraPaths": [
+		"${workspaceFolder}/sources/poky/bitbake/lib",
+		"${workspaceFolder}/sources/poky/meta/lib"
+	],
+	"python.analysis.extraPaths": [
+		"${workspaceFolder}/sources/poky/bitbake/lib",
+		"${workspaceFolder}/sources/poky/meta/lib"
+	],
+	"files.associations": {
+		"*.smr": "scheme",
+		"*.fnl": "scheme",
+		"*.urn": "scheme",
+		"*.prf": "ini",
+		"*.dhall": "haskell",
+		"bsconfig.json": "jsonc",
+		"*.conf": "bitbake",
+		"*.inc": "bitbake"
+	}
 }
