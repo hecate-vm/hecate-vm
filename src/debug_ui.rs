@@ -2,19 +2,21 @@ use std::cell::RefCell;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use rvsim::{CpuError, CpuState, Interp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
-use tungstenite::{Message, accept};
+use tungstenite::{accept, Message};
 
 use crate::{
-    HecateClock, HecateMemory, RunStats, SimConfig, handle_syscall, load_elf, load_elf_bytes,
-    syscall_cycles_for,
+    handle_syscall, load_elf, load_elf_bytes, syscall_cycles_for, HecateClock, HecateMemory,
+    RunStats, SimConfig,
 };
 
 const UI_HTML: &str = include_str!("assets/index.html");
@@ -49,6 +51,7 @@ struct ExampleEntry {
 #[derive(Debug, Clone)]
 enum LoadedProgramSource {
     Builtin { name: String, bytes: &'static [u8] },
+    Uploaded { name: String, bytes: Vec<u8> },
     File { path: PathBuf, display_name: String },
 }
 
@@ -56,6 +59,7 @@ impl LoadedProgramSource {
     fn display_name(&self) -> &str {
         match self {
             Self::Builtin { name, .. } => name.as_str(),
+            Self::Uploaded { name, .. } => name.as_str(),
             Self::File { display_name, .. } => display_name.as_str(),
         }
     }
@@ -88,7 +92,9 @@ struct DebugSnapshot {
 #[derive(Debug)]
 enum VmCommand {
     Initialize,
+    Examples,
     Launch { path: String },
+    LaunchBytes { name: String, bytes: Vec<u8> },
     Continue,
     Pause,
     Next { count: u64 },
@@ -103,6 +109,7 @@ enum VmCommand {
 enum VmReply {
     Ack,
     Loaded { entry: u32, entry_hex: String },
+    Examples { examples: Vec<ExampleEntry> },
     State { state: DebugSnapshot },
     Memory { addr: u32, len: u32, bytes: Vec<u8> },
     Error { message: String },
@@ -203,10 +210,10 @@ impl DebugMachine {
 
         let display_name = source.display_name().to_string();
         let entry = match &source {
-            LoadedProgramSource::Builtin { name, bytes } => {
-                load_elf_bytes(name, bytes, &mut self.memory)
-                    .with_context(|| format!("Failed to load builtin example: {name}"))?
-            }
+            LoadedProgramSource::Builtin { name, bytes } => load_elf_bytes(name, bytes, &mut self.memory)
+                .with_context(|| format!("Failed to load builtin example: {name}"))?,
+            LoadedProgramSource::Uploaded { name, bytes } => load_elf_bytes(name, bytes, &mut self.memory)
+                .with_context(|| format!("Failed to load uploaded program: {name}"))?,
             LoadedProgramSource::File { path, .. } => load_elf(path, &mut self.memory)
                 .with_context(|| format!("Failed to load program: {}", path.display()))?,
         };
@@ -224,6 +231,10 @@ impl DebugMachine {
     fn load_program(&mut self, path: PathBuf) -> anyhow::Result<()> {
         let source = resolve_program_source(path)?;
         self.load_program_source(source)
+    }
+
+    fn load_uploaded_program(&mut self, name: String, bytes: Vec<u8>) -> anyhow::Result<()> {
+        self.load_program_source(LoadedProgramSource::Uploaded { name, bytes })
     }
 
     fn reset_to_beginning(&mut self) -> anyhow::Result<()> {
@@ -644,6 +655,13 @@ fn parse_string_value(v: Option<&Value>, key: &str) -> anyhow::Result<String> {
     Ok(s.to_string())
 }
 
+fn parse_base64_bytes(v: Option<&Value>, key: &str) -> anyhow::Result<Vec<u8>> {
+    let encoded = parse_string_value(v, key)?;
+    BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|e| anyhow!("invalid base64 value for {key}: {e}"))
+}
+
 fn worker_loop(
     rx: Receiver<Envelope>,
     initial_path: Option<PathBuf>,
@@ -690,6 +708,9 @@ fn worker_loop(
 fn handle_command(vm: &mut DebugMachine, env: Envelope) -> anyhow::Result<bool> {
     let reply = match env.cmd {
         VmCommand::Initialize => VmReply::Ack,
+        VmCommand::Examples => VmReply::Examples {
+            examples: builtin_examples(),
+        },
         VmCommand::Launch { path } => {
             let p = PathBuf::from(path);
             match vm.load_program(p) {
@@ -702,6 +723,15 @@ fn handle_command(vm: &mut DebugMachine, env: Envelope) -> anyhow::Result<bool> 
                 },
             }
         }
+        VmCommand::LaunchBytes { name, bytes } => match vm.load_uploaded_program(name, bytes) {
+            Ok(()) => VmReply::Loaded {
+                entry: vm.entry,
+                entry_hex: format!("0x{:08x}", vm.entry),
+            },
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
+        },
         VmCommand::Continue => {
             if vm.halted {
                 VmReply::Error {
@@ -805,13 +835,15 @@ fn process_control_request(parsed: ControlRequest, tx: &Sender<Envelope>) -> Con
 }
 
 fn builtin_examples() -> Vec<ExampleEntry> {
-    crate::bundled_examples::EXAMPLES
+    let mut examples = crate::bundled_examples::EXAMPLES
         .iter()
         .map(|example| ExampleEntry {
             name: example.name.to_string(),
             path: example.name.to_string(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    examples.sort_by(|a, b| a.name.cmp(&b.name));
+    examples
 }
 
 fn builtin_example_by_name(name: &str) -> Option<&'static [u8]> {
@@ -850,10 +882,7 @@ fn resolve_program_source(path: PathBuf) -> anyhow::Result<LoadedProgramSource> 
         });
     }
 
-    Err(anyhow!(
-        "Unknown example or missing file: {}",
-        path.display()
-    ))
+    Err(anyhow!("Unknown example or missing file: {}", path.display()))
 }
 
 fn content_type_header(value: &str) -> Option<Header> {
@@ -886,21 +915,24 @@ fn respond_text(request: Request, status: u16, body: &str, content_type: &str) {
 }
 
 fn handle_examples_request(request: Request) {
-    let examples = builtin_examples();
-    respond_json(request, 200, &serde_json::json!({ "examples": examples }));
+    respond_json(request, 200, &serde_json::json!({ "examples": builtin_examples() }));
 }
 
 fn handle_examples_manifest_request(request: Request) {
-    let examples = builtin_examples();
-    respond_json(request, 200, &serde_json::json!({ "examples": examples }));
+    respond_json(request, 200, &serde_json::json!({ "examples": builtin_examples() }));
 }
 
 fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
     let args = req.arguments.as_ref();
     let cmd = match req.command.as_str() {
         "initialize" => VmCommand::Initialize,
+        "examples" => VmCommand::Examples,
         "launch" | "load" => VmCommand::Launch {
             path: parse_string_value(args, "path")?,
+        },
+        "launchBytes" | "upload" => VmCommand::LaunchBytes {
+            name: parse_string_value(args, "name")?,
+            bytes: parse_base64_bytes(args, "bytesBase64")?,
         },
         "continue" => VmCommand::Continue,
         "pause" => VmCommand::Pause,
@@ -964,11 +996,7 @@ fn handle_control_request(mut request: Request, tx: &Sender<Envelope>) {
     };
 
     let rsp = process_control_request(parsed, tx);
-    respond_json(
-        request,
-        200,
-        &serde_json::to_value(rsp).unwrap_or(Value::Null),
-    );
+    respond_json(request, 200, &serde_json::to_value(rsp).unwrap_or(Value::Null));
 }
 
 fn handle_ws_client(stream: TcpStream, tx: Sender<Envelope>) -> anyhow::Result<()> {

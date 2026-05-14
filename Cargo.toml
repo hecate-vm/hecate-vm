@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.95"
+base64 = "0.22"
 clap = { version = "4.5.22", features = ["derive"] }
 rvsim = { git = "https://github.com/hecate-vm/rvsim", version = "0.2.2", default-features = false }
 serde = { version = "1", features = ["derive"] }

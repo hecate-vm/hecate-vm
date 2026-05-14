@@ -117,16 +117,7 @@
             color: #fff;
         }
 
-        input {
-            width: 100%;
-            border: 1px solid #d8c8b5;
-            border-radius: 10px;
-            padding: 9px 10px;
-            background: #fffdf8;
-            color: var(--ink);
-            font-family: var(--mono);
-        }
-
+        input,
         select {
             width: 100%;
             border: 1px solid #d8c8b5;
@@ -142,6 +133,13 @@
             grid-template-columns: 1fr 1fr;
             gap: 8px;
             margin-top: 8px;
+        }
+
+        .connection-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+            align-items: end;
         }
 
         .kv {
@@ -187,8 +185,16 @@
             color: var(--warn);
         }
 
+        .hidden {
+            display: none !important;
+        }
+
         @media (max-width: 980px) {
             .layout {
+                grid-template-columns: 1fr;
+            }
+
+            .connection-row {
                 grid-template-columns: 1fr;
             }
         }
@@ -203,28 +209,24 @@
     <div class="layout">
         <section class="card">
             <h2>Program & Control</h2>
-            <div class="row">
-                <div>
-                    <label class="muted" for="mode">Execution mode</label>
-                    <select id="mode">
-                        <option value="local">Connect to local Hecate VM</option>
-                        <option value="wasm">Run in browser (WASM)</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="muted" for="ws-port">Local websocket port</label>
-                    <input id="ws-port" value="8582" />
+
+            <div>
+                <label class="muted" for="ws-url">Websocket URL</label>
+                <div class="connection-row">
+                    <input id="ws-url" placeholder="ws://127.0.0.1:8582" />
+                    <button class="primary" id="btn-connect">Connect</button>
                 </div>
             </div>
 
-            <label class="muted" for="example-select" style="margin-top:10px; display:block;">Examples</label>
-            <select id="example-select"></select>
+            <div id="examples-block" style="margin-top:10px;">
+                <label class="muted" for="example-select" id="examples-label">Examples</label>
+                <select id="example-select"></select>
+            </div>
 
-            <label class="muted" for="bin-path">Binary path on host</label>
-            <input id="bin-path" placeholder="/abs/path/to/program.elf" />
+            <input id="file-picker" type="file" accept=".elf,application/octet-stream" class="hidden" />
 
             <div class="controls">
-                <button class="primary" id="btn-load">Load</button>
+                <button class="primary" id="btn-load">Upload ELF</button>
                 <button class="primary" id="btn-run">Run</button>
                 <button id="btn-pause">Pause</button>
                 <button id="btn-step">Step 1</button>
@@ -303,95 +305,23 @@
 
     <script>
         const categories = {
-            "arithmetic": [
-                "add",
-                "addi",
-                "neg",
-                "sub",
-                "mul",
-                "mulh",
-                "mulhu",
-                "mulhsu",
-                "div",
-                "rem"
-            ],
-            "bitwise-logic": [
-                "and",
-                "andi",
-                "not",
-                "or",
-                "ori",
-                "xor",
-                "xori"
-            ],
-            "shift": [
-                "sll",
-                "slli",
-                "srl",
-                "srli",
-                "sra",
-                "srai"
-            ],
-            "load-immediate": [
-                "li",
-                "lui",
-                "auipc"
-            ],
-            "jump-and-function": [
-                "j",
-                "jal",
-                "jalr",
-                "call",
-                "ret"
-            ],
-            "branch": [
-                "beq",
-                "beqz",
-                "bne",
-                "bnez",
-                "blt",
-                "bltu",
-                "bltz",
-                "bgt",
-                "bgtu",
-                "bgtz",
-                "ble",
-                "bleu",
-                "blez",
-                "bge",
-                "bgeu",
-                "bgez"
-            ],
-            "set": [
-                "slt",
-                "slti",
-                "sltu",
-                "sltiu",
-                "seqz",
-                "snez",
-                "sltz",
-                "sgtz"
-            ],
-            "counters": [
-                "rdcycle",
-                "rdcycleh",
-                "rdtime",
-                "rdtimeh",
-                "rdinstret",
-                "rdinstreth"
-            ],
-            "misc-instructions": [
-                "ebreak",
-                "ecall",
-                "fence",
-                "mv",
-                "nop"
-            ]
+            "arithmetic": ["add", "addi", "neg", "sub", "mul", "mulh", "mulhu", "mulhsu", "div", "rem"],
+            "bitwise-logic": ["and", "andi", "not", "or", "ori", "xor", "xori"],
+            "shift": ["sll", "slli", "srl", "srli", "sra", "srai"],
+            "load-immediate": ["li", "lui", "auipc"],
+            "jump-and-function": ["j", "jal", "jalr", "call", "ret"],
+            "branch": ["beq", "beqz", "bne", "bnez", "blt", "bltu", "bltz", "bgt", "bgtu", "bgtz", "ble", "bleu", "blez", "bge", "bgeu", "bgez"],
+            "set": ["slt", "slti", "sltu", "sltiu", "seqz", "snez", "sltz", "sgtz"],
+            "counters": ["rdcycle", "rdcycleh", "rdtime", "rdtimeh", "rdinstret", "rdinstreth"],
+            "misc-instructions": ["ebreak", "ecall", "fence", "mv", "nop"]
         };
 
         let seq = 1;
         let timer = null;
         let adapter = null;
+        let currentSnapshot = null;
+        let availableExamples = [];
+        let lastExamplesSignature = null;
 
         function showMsg(text, isError = false) {
             const el = document.getElementById('msg');
@@ -456,50 +386,52 @@
             el.textContent = running ? 'Running' : 'Paused';
         }
 
-        function makeHttpControl() {
-            return async function httpControl(command, args = {}) {
-                const payload = {
-                    id: seq++,
-                    command,
-                    arguments: args,
-                };
-                const res = await fetch('/api/v1/control', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload),
-                });
-                const body = await res.json();
-                if (!body.success) {
-                    throw new Error(body.message || 'request failed');
-                }
-                return body.body || {};
-            };
+        function isGitHubPages() {
+            return window.location.hostname.endsWith('github.io');
         }
 
-        function makeLocalAdapter() {
-            const httpControl = makeHttpControl();
+        function defaultWsUrl() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.hostname || '127.0.0.1';
+            const port = Number.parseInt(window.location.port || '0', 10);
+            const wsPort = Number.isFinite(port) && port > 0 ? String(port + 1) : '8582';
+            return `${protocol}//${host}:${wsPort}`;
+        }
+
+        function bytesToBase64(bytes) {
+            let binary = '';
+            const chunkSize = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                const chunk = bytes.subarray(i, i + chunkSize);
+                binary += String.fromCharCode(...chunk);
+            }
+            return btoa(binary);
+        }
+
+        function wait(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        function makeRemoteAdapter(wsUrl) {
             let ws = null;
             const pending = new Map();
 
-            async function connectWs() {
-                const wsPort = parseMaybeHex(document.getElementById('ws-port').value) || 8582;
-                const wsUrl = `ws://127.0.0.1:${wsPort}`;
-
+            async function connect() {
                 return await new Promise((resolve, reject) => {
                     const socket = new WebSocket(wsUrl);
                     const timeout = setTimeout(() => {
                         socket.close();
-                        reject(new Error('websocket connect timeout'));
-                    }, 800);
+                        reject(new Error(`websocket connect timeout: ${wsUrl}`));
+                    }, 1000);
 
                     socket.onopen = () => {
                         clearTimeout(timeout);
                         ws = socket;
 
-                        socket.onmessage = (ev) => {
+                        socket.onmessage = (event) => {
                             let data = null;
                             try {
-                                data = JSON.parse(ev.data);
+                                data = JSON.parse(event.data);
                             } catch {
                                 return;
                             }
@@ -529,14 +461,14 @@
 
                     socket.onerror = () => {
                         clearTimeout(timeout);
-                        reject(new Error('websocket connection failed'));
+                        reject(new Error(`websocket connection failed: ${wsUrl}`));
                     };
                 });
             }
 
             async function command(command, args = {}) {
                 if (!ws || ws.readyState !== WebSocket.OPEN) {
-                    return await httpControl(command, args);
+                    throw new Error('websocket is not connected');
                 }
 
                 const id = seq++;
@@ -547,26 +479,28 @@
                 });
             }
 
-            async function listExamples() {
-                const res = await fetch('/api/v1/examples');
-                if (!res.ok) {
-                    return [];
-                }
-                const body = await res.json();
-                return body.examples || [];
-            }
-
             return {
-                connect: async () => {
-                    try {
-                        await connectWs();
-                        showMsg('Connected over websocket');
-                    } catch {
-                        showMsg('Websocket unavailable, using HTTP fallback');
+                kind: 'remote',
+                connect,
+                disconnect() {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.close();
                     }
+                    ws = null;
                 },
-                command,
-                listExamples,
+                async command(commandName, args = {}) {
+                    if (commandName === 'launchBytes') {
+                        return await command(commandName, {
+                            name: args.name,
+                            bytesBase64: bytesToBase64(args.bytes),
+                        });
+                    }
+                    return await command(commandName, args);
+                },
+                async listExamples() {
+                    const body = await command('examples');
+                    return body.examples || [];
+                },
             };
         }
 
@@ -589,101 +523,112 @@
                 return vm;
             }
 
-            async function listExamples() {
-                const res = await fetch('/assets/examples.json');
-                if (!res.ok) {
-                    return [];
-                }
-                const body = await res.json();
-                return body.examples || [];
-            }
-
-            async function command(command, args = {}) {
-                const runtime = await ensureVm();
-
-                if (typeof runtime.control === 'function') {
-                    const rsp = await runtime.control({ id: seq++, command, arguments: args });
-                    if (!rsp.success) {
-                        throw new Error(rsp.message || 'WASM command failed');
-                    }
-                    return rsp.body || {};
-                }
-
-                if (command === 'launch' || command === 'load') {
-                    const path = args.path;
-                    if (!path) {
-                        throw new Error('Missing path for launch');
-                    }
-                    const res = await fetch(path);
-                    if (!res.ok) {
-                        throw new Error(`Failed to fetch example: ${path}`);
-                    }
-                    const bytes = new Uint8Array(await res.arrayBuffer());
-                    if (typeof runtime.loadBytes !== 'function') {
-                        throw new Error('WASM runtime is missing loadBytes(bytes, path)');
-                    }
-                    return await runtime.loadBytes(bytes, path);
-                }
-
-                if (typeof runtime.command !== 'function') {
-                    throw new Error('WASM runtime is missing command(command, args)');
-                }
-                return await runtime.command(command, args);
-            }
-
             return {
-                connect: async () => {
+                kind: 'wasm',
+                async connect() {
                     await ensureVm();
-                    showMsg('WASM runtime initialized');
                 },
-                command,
-                listExamples,
+                disconnect() { },
+                async listExamples() {
+                    const res = await fetch('/assets/examples.json');
+                    if (!res.ok) {
+                        return [];
+                    }
+                    const body = await res.json();
+                    return body.examples || [];
+                },
+                async command(commandName, args = {}) {
+                    const runtime = await ensureVm();
+
+                    if (commandName === 'launchBytes') {
+                        if (typeof runtime.loadBytes === 'function') {
+                            return await runtime.loadBytes(args.bytes, args.name);
+                        }
+                        if (typeof runtime.command === 'function') {
+                            return await runtime.command(commandName, args);
+                        }
+                        throw new Error('WASM runtime is missing loadBytes(bytes, name)');
+                    }
+
+                    if (commandName === 'launch' || commandName === 'load') {
+                        const path = args.path;
+                        if (!path) {
+                            throw new Error('Missing path for launch');
+                        }
+                        const res = await fetch(path);
+                        if (!res.ok) {
+                            throw new Error(`Failed to fetch example: ${path}`);
+                        }
+                        const bytes = new Uint8Array(await res.arrayBuffer());
+                        if (typeof runtime.loadBytes === 'function') {
+                            return await runtime.loadBytes(bytes, path.split('/').pop() || path);
+                        }
+                        if (typeof runtime.command === 'function') {
+                            return await runtime.command('launchBytes', {
+                                name: path.split('/').pop() || path,
+                                bytes,
+                            });
+                        }
+                        throw new Error('WASM runtime is missing loadBytes(bytes, name)');
+                    }
+
+                    if (typeof runtime.control === 'function') {
+                        const rsp = await runtime.control({ id: seq++, command: commandName, arguments: args });
+                        if (!rsp.success) {
+                            throw new Error(rsp.message || 'WASM command failed');
+                        }
+                        return rsp.body || {};
+                    }
+
+                    if (typeof runtime.command !== 'function') {
+                        throw new Error('WASM runtime is missing command(command, args)');
+                    }
+                    return await runtime.command(commandName, args);
+                },
             };
         }
 
-        async function populateExamples() {
-            const select = document.getElementById('example-select');
-            select.innerHTML = '';
-
-            const none = document.createElement('option');
-            none.value = '';
-            none.textContent = '(manual path)';
-            select.appendChild(none);
-
-            if (!adapter) {
-                return;
+        async function setActiveAdapter(nextAdapter, message) {
+            if (adapter && typeof adapter.disconnect === 'function') {
+                adapter.disconnect();
             }
-
-            let examples = [];
-            try {
-                examples = await adapter.listExamples();
-            } catch {
-                examples = [];
+            adapter = nextAdapter;
+            await adapter.connect();
+            availableExamples = await adapter.listExamples().catch(() => []);
+            renderExamples();
+            if (message) {
+                showMsg(message);
             }
-
-            for (const item of examples) {
-                const opt = document.createElement('option');
-                opt.value = item.path;
-                opt.textContent = item.name;
-                select.appendChild(opt);
-            }
+            await refresh();
         }
 
-        async function switchMode() {
-            const mode = document.getElementById('mode').value;
-            adapter = mode === 'wasm' ? makeWasmAdapter() : makeLocalAdapter();
+        async function fallbackToWasm(message) {
+            await setActiveAdapter(makeWasmAdapter(), message || 'WASM runtime initialized');
+        }
 
-            const pathInput = document.getElementById('bin-path');
-            pathInput.placeholder = mode === 'wasm' ? 'hello_world.elf' : '/abs/path/to/program.elf';
-
+        async function connectToRemoteOrFallback(wsUrl, fallbackMessage) {
+            const remoteAdapter = makeRemoteAdapter(wsUrl);
             try {
-                await adapter.connect();
-            } catch (err) {
-                showMsg(err.message || String(err), true);
+                let lastError = null;
+                for (let attempt = 0; attempt < 5; attempt++) {
+                    try {
+                        await setActiveAdapter(remoteAdapter, `Connected to ${wsUrl}`);
+                        return;
+                    } catch (error) {
+                        lastError = error;
+                        if (attempt < 4) {
+                            await wait(250);
+                        }
+                    }
+                }
+                throw lastError || new Error(`websocket connection failed: ${wsUrl}`);
+            } catch (error) {
+                try {
+                    await fallbackToWasm(fallbackMessage || `Could not connect to ${wsUrl}; using WASM instead`);
+                } catch (fallbackError) {
+                    showMsg(fallbackError.message || String(fallbackError), true);
+                }
             }
-
-            await populateExamples();
-            await refresh();
         }
 
         async function control(command, args = {}) {
@@ -693,64 +638,154 @@
             return await adapter.command(command, args);
         }
 
+        function currentLoadedExampleName() {
+            const loaded = currentSnapshot?.loaded_path || '';
+            const match = availableExamples.find((example) => example.name === loaded || example.path === loaded);
+            return match ? match.name : '';
+        }
+
+        function renderExamples() {
+            const block = document.getElementById('examples-block');
+            const select = document.getElementById('example-select');
+            if (!availableExamples.length) {
+                block.classList.add('hidden');
+                if (lastExamplesSignature !== 'hidden') {
+                    select.innerHTML = '';
+                    lastExamplesSignature = 'hidden';
+                }
+                return;
+            }
+
+            block.classList.remove('hidden');
+            const selectedExample = currentLoadedExampleName();
+            const signature = JSON.stringify({
+                examples: availableExamples,
+                selectedExample,
+            });
+            if (signature === lastExamplesSignature) {
+                return;
+            }
+
+            const options = ['<option value="">-</option>'];
+            for (const item of availableExamples) {
+                const selected = item.name === selectedExample ? ' selected' : '';
+                options.push(`<option value="${item.path}"${selected}>${item.name}</option>`);
+            }
+            select.innerHTML = options.join('');
+            if (!selectedExample) {
+                select.value = '';
+            }
+            lastExamplesSignature = signature;
+        }
+
+        async function confirmBeforeReplacingBinary() {
+            const instret = Number(currentSnapshot?.stats?.instret || 0);
+            if (instret === 0) {
+                return true;
+            }
+            return window.confirm('The current VM has already executed instructions. Load a different binary anyway?');
+        }
+
         async function refresh() {
             try {
                 const body = await control('state');
-                const s = body.state;
-                if (!s) {
+                const state = body.state;
+                if (!state) {
                     return;
                 }
 
-                updateStatusPill(!!s.running);
-                document.getElementById('pc').textContent = s.pc_hex;
-                document.getElementById('entry').textContent = s.entry_hex;
-                document.getElementById('loaded').textContent = s.loaded_path || '(none)';
-                document.getElementById('stop').textContent = s.last_stop_reason;
-                renderInstructionWithLink(s.current_instruction);
-                document.getElementById('cycles').textContent = String(s.stats.cycles);
-                document.getElementById('instret').textContent = String(s.stats.instret);
-                document.getElementById('syscalls').textContent = String(s.stats.syscall_count);
-                document.getElementById('regs').textContent = renderRegs(s.registers, s.pc);
-            } catch (err) {
-                showMsg(err.message || String(err), true);
+                currentSnapshot = state;
+                updateStatusPill(!!state.running);
+                document.getElementById('pc').textContent = state.pc_hex;
+                document.getElementById('entry').textContent = state.entry_hex;
+                document.getElementById('loaded').textContent = state.loaded_path || '(none)';
+                document.getElementById('stop').textContent = state.last_stop_reason;
+                renderInstructionWithLink(state.current_instruction);
+                document.getElementById('cycles').textContent = String(state.stats.cycles);
+                document.getElementById('instret').textContent = String(state.stats.instret);
+                document.getElementById('syscalls').textContent = String(state.stats.syscall_count);
+                document.getElementById('regs').textContent = renderRegs(state.registers, state.pc);
+                renderExamples();
+            } catch (error) {
+                showMsg(error.message || String(error), true);
             }
         }
 
         function restartTimer() {
-            if (timer) clearInterval(timer);
+            if (timer) {
+                clearInterval(timer);
+            }
             const ms = Math.max(50, parseMaybeHex(document.getElementById('refresh-ms').value) || 250);
             timer = setInterval(refresh, ms);
         }
 
-        document.getElementById('mode').addEventListener('change', switchMode);
-
-        document.getElementById('ws-port').addEventListener('change', async () => {
-            if (document.getElementById('mode').value === 'local') {
-                await switchMode();
+        async function loadExample(path) {
+            const body = await control('launch', { path });
+            showMsg(`Loaded example: ${path}`);
+            if (body.entry_hex) {
+                showMsg(`Loaded example: ${path} @ ${body.entry_hex}`);
             }
+            await refresh();
+        }
+
+        async function loadUploadedFile(file) {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const body = await control('launchBytes', { name: file.name, bytes });
+            showMsg(`Loaded binary: ${file.name}${body.entry_hex ? ` @ ${body.entry_hex}` : ''}`);
+            await refresh();
+        }
+
+        document.getElementById('btn-connect').addEventListener('click', async () => {
+            const wsUrl = document.getElementById('ws-url').value.trim();
+            if (!wsUrl) {
+                showMsg('Please enter a websocket URL', true);
+                return;
+            }
+            await connectToRemoteOrFallback(wsUrl, `Could not connect to ${wsUrl}; using WASM instead`);
         });
 
-        document.getElementById('example-select').addEventListener('change', () => {
-            const selected = document.getElementById('example-select').value;
-            if (selected) {
-                document.getElementById('bin-path').value = selected;
+        document.getElementById('example-select').addEventListener('change', async (event) => {
+            const selected = event.target.value;
+            if (!selected) {
+                return;
             }
-        });
 
-        document.getElementById('btn-load').addEventListener('click', async () => {
-            const selected = document.getElementById('example-select').value;
-            const path = (selected || document.getElementById('bin-path').value || '').trim();
-            if (!path) {
-                showMsg('Please choose an example or provide a path', true);
+            if (!(await confirmBeforeReplacingBinary())) {
+                renderExamples();
                 return;
             }
 
             try {
-                const body = await control('launch', { path });
-                showMsg(`Loaded: entry ${body.entry_hex || ''}`);
-                await refresh();
-            } catch (err) {
-                showMsg(err.message || String(err), true);
+                await loadExample(selected);
+            } catch (error) {
+                showMsg(error.message || String(error), true);
+                renderExamples();
+            }
+        });
+
+        document.getElementById('btn-load').addEventListener('click', () => {
+            const picker = document.getElementById('file-picker');
+            picker.value = '';
+            picker.click();
+        });
+
+        document.getElementById('file-picker').addEventListener('change', async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) {
+                return;
+            }
+
+            if (!(await confirmBeforeReplacingBinary())) {
+                event.target.value = '';
+                return;
+            }
+
+            try {
+                await loadUploadedFile(file);
+            } catch (error) {
+                showMsg(error.message || String(error), true);
+            } finally {
+                event.target.value = '';
             }
         });
 
@@ -758,8 +793,8 @@
             try {
                 await control('continue');
                 showMsg('Running');
-            } catch (err) {
-                showMsg(err.message || String(err), true);
+            } catch (error) {
+                showMsg(error.message || String(error), true);
             }
         });
 
@@ -768,8 +803,8 @@
                 await control('pause');
                 showMsg('Paused');
                 await refresh();
-            } catch (err) {
-                showMsg(err.message || String(err), true);
+            } catch (error) {
+                showMsg(error.message || String(error), true);
             }
         });
 
@@ -778,8 +813,8 @@
                 const count = Math.max(1, parseMaybeHex(document.getElementById('step-count').value) || 1);
                 await control('next', { count });
                 await refresh();
-            } catch (err) {
-                showMsg(err.message || String(err), true);
+            } catch (error) {
+                showMsg(error.message || String(error), true);
             }
         });
 
@@ -788,8 +823,8 @@
                 await control('restart');
                 showMsg('Reset complete');
                 await refresh();
-            } catch (err) {
-                showMsg(err.message || String(err), true);
+            } catch (error) {
+                showMsg(error.message || String(error), true);
             }
         });
 
@@ -799,22 +834,36 @@
             try {
                 const body = await control('readMemory', { addr, len });
                 const bytes = body.bytes || [];
-                let lines = [];
+                const lines = [];
                 for (let i = 0; i < bytes.length; i += 16) {
-                    const row = bytes.slice(i, i + 16).map(b => Number(b).toString(16).padStart(2, '0')).join(' ');
+                    const row = bytes.slice(i, i + 16).map((b) => Number(b).toString(16).padStart(2, '0')).join(' ');
                     const rowAddr = (body.addr + i) >>> 0;
                     lines.push(`0x${rowAddr.toString(16).padStart(8, '0')}: ${row}`);
                 }
                 document.getElementById('mem-view').textContent = lines.join('\n') || '(empty)';
-            } catch (err) {
-                showMsg(err.message || String(err), true);
+            } catch (error) {
+                showMsg(error.message || String(error), true);
             }
         });
 
         document.getElementById('refresh-ms').addEventListener('change', restartTimer);
 
-        restartTimer();
-        switchMode();
+        async function boot() {
+            const wsUrl = defaultWsUrl();
+            document.getElementById('ws-url').value = wsUrl;
+            restartTimer();
+
+            if (isGitHubPages()) {
+                await fallbackToWasm('WASM runtime initialized');
+                return;
+            }
+
+            await connectToRemoteOrFallback(wsUrl, `Could not connect to ${wsUrl}; using WASM instead`);
+        }
+
+        boot().catch((error) => {
+            showMsg(error.message || String(error), true);
+        });
     </script>
 </body>
 
