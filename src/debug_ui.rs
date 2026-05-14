@@ -2,21 +2,21 @@ use std::cell::RefCell;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
-use anyhow::{anyhow, Context};
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use anyhow::{Context, anyhow};
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use rvsim::{CpuError, CpuState, Interp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
-use tungstenite::{accept, Message};
+use tungstenite::{Message, accept};
 
-use crate::{
-    handle_syscall, load_elf, load_elf_bytes, syscall_cycles_for, HecateClock, HecateMemory,
-    RunStats, SimConfig,
+use hecate_vm::{
+    BUNDLED_EXAMPLES, HecateClock, HecateMemory, RunStats, SimConfig, handle_syscall, load_elf,
+    load_elf_bytes, syscall_cycles_for,
 };
 
 const UI_HTML: &str = include_str!("assets/index.html");
@@ -210,10 +210,14 @@ impl DebugMachine {
 
         let display_name = source.display_name().to_string();
         let entry = match &source {
-            LoadedProgramSource::Builtin { name, bytes } => load_elf_bytes(name, bytes, &mut self.memory)
-                .with_context(|| format!("Failed to load builtin example: {name}"))?,
-            LoadedProgramSource::Uploaded { name, bytes } => load_elf_bytes(name, bytes, &mut self.memory)
-                .with_context(|| format!("Failed to load uploaded program: {name}"))?,
+            LoadedProgramSource::Builtin { name, bytes } => {
+                load_elf_bytes(name, bytes, &mut self.memory)
+                    .with_context(|| format!("Failed to load builtin example: {name}"))?
+            }
+            LoadedProgramSource::Uploaded { name, bytes } => {
+                load_elf_bytes(name, bytes, &mut self.memory)
+                    .with_context(|| format!("Failed to load uploaded program: {name}"))?
+            }
             LoadedProgramSource::File { path, .. } => load_elf(path, &mut self.memory)
                 .with_context(|| format!("Failed to load program: {}", path.display()))?,
         };
@@ -835,7 +839,7 @@ fn process_control_request(parsed: ControlRequest, tx: &Sender<Envelope>) -> Con
 }
 
 fn builtin_examples() -> Vec<ExampleEntry> {
-    let mut examples = crate::bundled_examples::EXAMPLES
+    let mut examples = BUNDLED_EXAMPLES
         .iter()
         .map(|example| ExampleEntry {
             name: example.name.to_string(),
@@ -847,7 +851,7 @@ fn builtin_examples() -> Vec<ExampleEntry> {
 }
 
 fn builtin_example_by_name(name: &str) -> Option<&'static [u8]> {
-    crate::bundled_examples::EXAMPLES
+    BUNDLED_EXAMPLES
         .iter()
         .find(|example| example.name == name)
         .map(|example| example.bytes)
@@ -882,7 +886,10 @@ fn resolve_program_source(path: PathBuf) -> anyhow::Result<LoadedProgramSource> 
         });
     }
 
-    Err(anyhow!("Unknown example or missing file: {}", path.display()))
+    Err(anyhow!(
+        "Unknown example or missing file: {}",
+        path.display()
+    ))
 }
 
 fn content_type_header(value: &str) -> Option<Header> {
@@ -915,11 +922,19 @@ fn respond_text(request: Request, status: u16, body: &str, content_type: &str) {
 }
 
 fn handle_examples_request(request: Request) {
-    respond_json(request, 200, &serde_json::json!({ "examples": builtin_examples() }));
+    respond_json(
+        request,
+        200,
+        &serde_json::json!({ "examples": builtin_examples() }),
+    );
 }
 
 fn handle_examples_manifest_request(request: Request) {
-    respond_json(request, 200, &serde_json::json!({ "examples": builtin_examples() }));
+    respond_json(
+        request,
+        200,
+        &serde_json::json!({ "examples": builtin_examples() }),
+    );
 }
 
 fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
@@ -996,7 +1011,11 @@ fn handle_control_request(mut request: Request, tx: &Sender<Envelope>) {
     };
 
     let rsp = process_control_request(parsed, tx);
-    respond_json(request, 200, &serde_json::to_value(rsp).unwrap_or(Value::Null));
+    respond_json(
+        request,
+        200,
+        &serde_json::to_value(rsp).unwrap_or(Value::Null),
+    );
 }
 
 fn handle_ws_client(stream: TcpStream, tx: Sender<Envelope>) -> anyhow::Result<()> {

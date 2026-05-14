@@ -1,0 +1,26 @@
+[package]
+name = "hecate_vm_wasm"
+version = "0.1.0"
+edition = "2024"
+description = "WASM runtime for Hecate VM debug UI"
+license-file = "../../../LICENSE"
+repository = "https://github.com/hecate-vm/hecate-vm"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1.0.95"
+base64 = "0.22"
+hecate-vm = { path = "../../.." }
+js-sys = "0.3"
+rvsim = { git = "https://github.com/hecate-vm/rvsim", version = "0.2.2", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+serde_json = "1"
+wasm-bindgen = "0.2"
+
+[features]
+default = ["rv32c", "rv32fd"]
+rv32c = ["rvsim/rv32c"]
+rv32fd = ["rvsim/rv32fd"]
