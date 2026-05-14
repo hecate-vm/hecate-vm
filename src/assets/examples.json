@@ -1,19 +1,19 @@
 {
   "examples": [
     {
-      "name": "hello_world",
+      "name": "hello_world.elf",
       "path": "./examples/hello_world.elf"
     },
     {
-      "name": "linked_list",
+      "name": "linked_list.elf",
       "path": "./examples/linked_list.elf"
     },
     {
-      "name": "rust_hello",
+      "name": "rust_hello.elf",
       "path": "./examples/rust_hello.elf"
     },
     {
-      "name": "vector_contiguous",
+      "name": "vector_contiguous.elf",
       "path": "./examples/vector_contiguous.elf"
     }
   ]

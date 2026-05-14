@@ -5,6 +5,7 @@ edition = "2024"
 description = "The main package for the hecate vm"
 license-file = "LICENSE"
 repository = "https://github.com/hecate-vm/hecate-vm"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.95"
@@ -17,6 +18,12 @@ toml = "0.8"
 tungstenite = "0.24"
 
 [features]
-default = ["rv32c", "rv32fd"]
+default = ["rv32c", "rv32fd", "demo"]
 rv32c = ["rvsim/rv32c"]
 rv32fd = ["rvsim/rv32fd"]
+demo = ["rust_hello", "linked_list", "vector_contiguous"]
+all_examples = ["hello_world", "linked_list", "rust_hello", "vector_contiguous"]
+hello_world = []
+linked_list = []
+rust_hello = []
+vector_contiguous = []

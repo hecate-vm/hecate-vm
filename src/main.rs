@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 mod debug_ui;
 
+mod bundled_examples {
+    include!(concat!(env!("OUT_DIR"), "/bundled_examples.rs"));
+}
+
 const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -469,11 +473,12 @@ fn read_u32_field(packed_field: *const u32) -> u32 {
     u32::from_le(unsafe { packed_field.read_unaligned() })
 }
 
-fn load_elf(path: &PathBuf, memory: &mut HecateMemory) -> anyhow::Result<u32> {
-    let data =
-        std::fs::read(path).with_context(|| format!("Failed to read ELF: {}", path.display()))?;
-
-    let elf = Elf32::parse(&data).map_err(|e| anyhow!("ELF parse failed: {e}"))?;
+pub(crate) fn load_elf_bytes(
+    label: &str,
+    data: &[u8],
+    memory: &mut HecateMemory,
+) -> anyhow::Result<u32> {
+    let elf = Elf32::parse(data).map_err(|e| anyhow!("ELF parse failed for {label}: {e}"))?;
 
     for (ph, segment) in elf.ph.iter().zip(elf.p.iter()) {
         let typ = read_u32_field(std::ptr::addr_of!(ph.typ));
@@ -495,6 +500,13 @@ fn load_elf(path: &PathBuf, memory: &mut HecateMemory) -> anyhow::Result<u32> {
 
     let entry = read_u32_field(std::ptr::addr_of!(elf.header.entry));
     Ok(entry)
+}
+
+fn load_elf(path: &PathBuf, memory: &mut HecateMemory) -> anyhow::Result<u32> {
+    let data =
+        std::fs::read(path).with_context(|| format!("Failed to read ELF: {}", path.display()))?;
+
+    load_elf_bytes(&path.display().to_string(), &data, memory)
 }
 
 fn syscall_cycles_for(code: u32, default_cycles: u64, syscall_cycles: &HashMap<u32, u64>) -> u64 {

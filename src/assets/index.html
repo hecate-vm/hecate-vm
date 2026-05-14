@@ -302,6 +302,93 @@
     </div>
 
     <script>
+        const categories = {
+            "arithmetic": [
+                "add",
+                "addi",
+                "neg",
+                "sub",
+                "mul",
+                "mulh",
+                "mulhu",
+                "mulhsu",
+                "div",
+                "rem"
+            ],
+            "bitwise-logic": [
+                "and",
+                "andi",
+                "not",
+                "or",
+                "ori",
+                "xor",
+                "xori"
+            ],
+            "shift": [
+                "sll",
+                "slli",
+                "srl",
+                "srli",
+                "sra",
+                "srai"
+            ],
+            "load-immediate": [
+                "li",
+                "lui",
+                "auipc"
+            ],
+            "jump-and-function": [
+                "j",
+                "jal",
+                "jalr",
+                "call",
+                "ret"
+            ],
+            "branch": [
+                "beq",
+                "beqz",
+                "bne",
+                "bnez",
+                "blt",
+                "bltu",
+                "bltz",
+                "bgt",
+                "bgtu",
+                "bgtz",
+                "ble",
+                "bleu",
+                "blez",
+                "bge",
+                "bgeu",
+                "bgez"
+            ],
+            "set": [
+                "slt",
+                "slti",
+                "sltu",
+                "sltiu",
+                "seqz",
+                "snez",
+                "sltz",
+                "sgtz"
+            ],
+            "counters": [
+                "rdcycle",
+                "rdcycleh",
+                "rdtime",
+                "rdtimeh",
+                "rdinstret",
+                "rdinstreth"
+            ],
+            "misc-instructions": [
+                "ebreak",
+                "ecall",
+                "fence",
+                "mv",
+                "nop"
+            ]
+        };
+
         let seq = 1;
         let timer = null;
         let adapter = null;
@@ -319,6 +406,11 @@
         }
 
         function docsUrlForMnemonic(mnemonic) {
+            for (const category in categories) {
+                if (categories[category].includes(mnemonic)) {
+                    return `https://projectf.io/posts/riscv-cheat-sheet/#${category}`;
+                }
+            }
             return `https://duckduckgo.com/?q=${encodeURIComponent(`RISC-V ${mnemonic} instruction`)}`;
         }
 
@@ -572,7 +664,7 @@
             for (const item of examples) {
                 const opt = document.createElement('option');
                 opt.value = item.path;
-                opt.textContent = `${item.name} (${item.path})`;
+                opt.textContent = item.name;
                 select.appendChild(opt);
             }
         }
@@ -582,7 +674,7 @@
             adapter = mode === 'wasm' ? makeWasmAdapter() : makeLocalAdapter();
 
             const pathInput = document.getElementById('bin-path');
-            pathInput.placeholder = mode === 'wasm' ? './examples/hello_world.elf' : '/abs/path/to/program.elf';
+            pathInput.placeholder = mode === 'wasm' ? 'hello_world.elf' : '/abs/path/to/program.elf';
 
             try {
                 await adapter.connect();

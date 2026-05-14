@@ -86,6 +86,16 @@ The browser UI supports two execution modes with the same controls:
 The UI includes an examples dropdown. In local mode it comes from `GET /api/v1/examples`.
 In browser mode it comes from `GET /assets/examples.json`.
 
+Example binaries are feature-gated at build time. Enable one or more of these Cargo features to embed them into the VM:
+
+- `hello_world`
+- `linked_list`
+- `rust_hello`
+- `vector_contiguous`
+
+When enabled, the matching example is built during compilation and embedded with `include_bytes!`.
+Only enabled examples are exposed by the local debug UI, and they are shown by filename only.
+
 The control API is exposed via `POST /api/v1/control`.
 The websocket transport accepts the same command envelope as JSON text messages.
 

@@ -1,6 +1,4 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
-use std::fs;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -15,11 +13,11 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use tungstenite::{Message, accept};
 
 use crate::{
-    HecateClock, HecateMemory, RunStats, SimConfig, handle_syscall, load_elf, syscall_cycles_for,
+    HecateClock, HecateMemory, RunStats, SimConfig, handle_syscall, load_elf, load_elf_bytes,
+    syscall_cycles_for,
 };
 
 const UI_HTML: &str = include_str!("assets/index.html");
-const EXAMPLES_JSON: &str = include_str!("assets/examples.json");
 const WASM_SHIM_JS: &str = include_str!("assets/wasm/hecate_vm_wasm.js");
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +44,21 @@ struct ControlResponse {
 struct ExampleEntry {
     name: String,
     path: String,
+}
+
+#[derive(Debug, Clone)]
+enum LoadedProgramSource {
+    Builtin { name: String, bytes: &'static [u8] },
+    File { path: PathBuf, display_name: String },
+}
+
+impl LoadedProgramSource {
+    fn display_name(&self) -> &str {
+        match self {
+            Self::Builtin { name, .. } => name.as_str(),
+            Self::File { display_name, .. } => display_name.as_str(),
+        }
+    }
 }
 
 impl ControlRequest {
@@ -114,7 +127,8 @@ struct DebugMachine {
     state: CpuState,
     clock: HecateClock,
 
-    loaded_path: Option<PathBuf>,
+    loaded_path: Option<String>,
+    loaded_source: Option<LoadedProgramSource>,
     entry: u32,
     halted: bool,
     running: bool,
@@ -153,6 +167,7 @@ impl DebugMachine {
             state: CpuState::new(0),
             clock: HecateClock::new(Rc::clone(&shared_stats), max_instructions),
             loaded_path: None,
+            loaded_source: None,
             entry: 0,
             halted: true,
             running: false,
@@ -182,26 +197,40 @@ impl DebugMachine {
         *self.shared_stats.borrow_mut() = RunStats::default();
     }
 
-    fn load_program(&mut self, path: PathBuf) -> anyhow::Result<()> {
+    fn load_program_source(&mut self, source: LoadedProgramSource) -> anyhow::Result<()> {
         self.clear_stats();
         self.reset_memory_and_clock();
 
-        let entry = load_elf(&path, &mut self.memory)
-            .with_context(|| format!("Failed to load program: {}", path.display()))?;
+        let display_name = source.display_name().to_string();
+        let entry = match &source {
+            LoadedProgramSource::Builtin { name, bytes } => {
+                load_elf_bytes(name, bytes, &mut self.memory)
+                    .with_context(|| format!("Failed to load builtin example: {name}"))?
+            }
+            LoadedProgramSource::File { path, .. } => load_elf(path, &mut self.memory)
+                .with_context(|| format!("Failed to load program: {}", path.display()))?,
+        };
+
         self.entry = entry;
         self.state = CpuState::new(entry);
-        self.loaded_path = Some(path);
+        self.loaded_path = Some(display_name);
+        self.loaded_source = Some(source);
         self.halted = false;
         self.running = false;
         self.last_stop_reason = "Program loaded".to_string();
         Ok(())
     }
 
+    fn load_program(&mut self, path: PathBuf) -> anyhow::Result<()> {
+        let source = resolve_program_source(path)?;
+        self.load_program_source(source)
+    }
+
     fn reset_to_beginning(&mut self) -> anyhow::Result<()> {
-        let Some(path) = self.loaded_path.clone() else {
+        let Some(source) = self.loaded_source.clone() else {
             return Err(anyhow!("No loaded program to reset"));
         };
-        self.load_program(path)
+        self.load_program_source(source)
     }
 
     fn effective_quota(&self, local_quota: Option<u64>) -> Option<u64> {
@@ -332,7 +361,7 @@ impl DebugMachine {
             pc_hex: format!("0x{:08x}", self.state.pc),
             entry: self.entry,
             entry_hex: format!("0x{:08x}", self.entry),
-            loaded_path: self.loaded_path.as_ref().map(|p| p.display().to_string()),
+            loaded_path: self.loaded_path.clone(),
             last_stop_reason: self.last_stop_reason.clone(),
             current_instruction: instr_text,
             current_instruction_hex: instr_hex,
@@ -775,69 +804,56 @@ fn process_control_request(parsed: ControlRequest, tx: &Sender<Envelope>) -> Con
     to_control_response(request_id, parsed.command, reply)
 }
 
-fn discover_examples() -> Vec<ExampleEntry> {
-    let mut out = Vec::<ExampleEntry>::new();
-    let mut seen = HashSet::<String>::new();
+fn builtin_examples() -> Vec<ExampleEntry> {
+    crate::bundled_examples::EXAMPLES
+        .iter()
+        .map(|example| ExampleEntry {
+            name: example.name.to_string(),
+            path: example.name.to_string(),
+        })
+        .collect()
+}
 
-    let normalize = |path: &str| {
-        let p = path.trim_start_matches("./").replace("\\", "/");
-        format!("./{}", p)
-    };
+fn builtin_example_by_name(name: &str) -> Option<&'static [u8]> {
+    crate::bundled_examples::EXAMPLES
+        .iter()
+        .find(|example| example.name == name)
+        .map(|example| example.bytes)
+}
 
-    let mut push_if_exists = |name: &str, path: &str| {
-        let normalized = normalize(path);
-        if PathBuf::from(&normalized).exists() && seen.insert(normalized.clone()) {
-            out.push(ExampleEntry {
-                name: name.to_string(),
-                path: normalized,
-            });
-        }
-    };
-
-    push_if_exists(
-        "hello_world",
-        "./target/hecate-rv32-build/examples-build/hello_world/hello_world.elf",
-    );
-    push_if_exists(
-        "linked_list",
-        "./target/hecate-rv32-build/examples-build/linked_list/linked_list.elf",
-    );
-    push_if_exists(
-        "vector_contiguous",
-        "./target/hecate-rv32-build/examples-build/vector_contiguous/vector_contiguous.elf",
-    );
-    push_if_exists(
-        "rust_hello",
-        "./target/hecate-rv32-build/examples-build/rust_hello/rust_hello.elf",
-    );
-    push_if_exists(
-        "rust_hello (cargo target)",
-        "./examples/rust_hello/target/riscv32im-hecate-none-elf/release/rust_hello.elf",
-    );
-
-    if let Ok(dir) = fs::read_dir("./target/hecate-rv32-build/examples-build") {
-        for entry in dir.flatten() {
-            let sub = entry.path();
-            if !sub.is_dir() {
-                continue;
-            }
-            let name = sub
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("example")
-                .to_string();
-            let elf = sub.join(format!("{name}.elf"));
-            if elf.exists() {
-                let path = normalize(&elf.display().to_string());
-                if seen.insert(path.clone()) {
-                    out.push(ExampleEntry { name, path });
-                }
-            }
-        }
+fn resolve_program_source(path: PathBuf) -> anyhow::Result<LoadedProgramSource> {
+    if path.exists() {
+        let display_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("program")
+            .to_string();
+        return Ok(LoadedProgramSource::File { path, display_name });
     }
 
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    let candidate = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+
+    if let Some(bytes) = builtin_example_by_name(candidate) {
+        return Ok(LoadedProgramSource::Builtin {
+            name: candidate.to_string(),
+            bytes,
+        });
+    }
+
+    if let Some(bytes) = builtin_example_by_name(path.to_string_lossy().as_ref()) {
+        return Ok(LoadedProgramSource::Builtin {
+            name: path.to_string_lossy().to_string(),
+            bytes,
+        });
+    }
+
+    Err(anyhow!(
+        "Unknown example or missing file: {}",
+        path.display()
+    ))
 }
 
 fn content_type_header(value: &str) -> Option<Header> {
@@ -870,14 +886,13 @@ fn respond_text(request: Request, status: u16, body: &str, content_type: &str) {
 }
 
 fn handle_examples_request(request: Request) {
-    let examples = discover_examples();
+    let examples = builtin_examples();
     respond_json(request, 200, &serde_json::json!({ "examples": examples }));
 }
 
 fn handle_examples_manifest_request(request: Request) {
-    let value: Value = serde_json::from_str(EXAMPLES_JSON)
-        .unwrap_or_else(|_| serde_json::json!({ "examples": [] }));
-    respond_json(request, 200, &value);
+    let examples = builtin_examples();
+    respond_json(request, 200, &serde_json::json!({ "examples": examples }));
 }
 
 fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {

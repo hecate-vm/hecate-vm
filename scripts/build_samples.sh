@@ -43,6 +43,26 @@ mkdir -p "$BUILD_ROOT"
 
 built_elf_count=0
 found_rust_example=0
+SELECTED_EXAMPLES=()
+if [[ -n "${HECATE_EXAMPLES:-}" ]]; then
+  IFS=',' read -r -a SELECTED_EXAMPLES <<< "$HECATE_EXAMPLES"
+fi
+
+should_build_example() {
+  local example_name="$1"
+
+  if [[ "${#SELECTED_EXAMPLES[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  for selected in "${SELECTED_EXAMPLES[@]}"; do
+    if [[ "$selected" == "$example_name" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
 
 ensure_rust_nightly() {
   if ! command -v cargo >/dev/null 2>&1; then
@@ -130,6 +150,10 @@ for example_dir in "$EXAMPLES_ROOT"/*; do
   fi
 
   example_name="$(basename "$example_dir")"
+
+  if ! should_build_example "$example_name"; then
+    continue
+  fi
 
   if [[ -f "$example_dir/CMakeLists.txt" ]]; then
     build_cmake_example "$example_dir" "$example_name"
