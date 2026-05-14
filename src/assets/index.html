@@ -370,6 +370,10 @@
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.textContent = mnemonic;
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                window.open(link.href, '_blank', 'noopener,noreferrer');
+            });
 
             container.appendChild(link);
             container.appendChild(document.createTextNode(rest));
