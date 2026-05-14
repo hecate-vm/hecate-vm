@@ -3,10 +3,10 @@ project(hecate_examples C)
 
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../runtime ${CMAKE_BINARY_DIR}/hecate-runtime)
 
-add_executable(hello_world_rv32
-  hello_world_rv32.c
+add_executable(hello_world
+  hello_world.c
 )
 
-set_target_properties(hello_world_rv32 PROPERTIES SUFFIX ".elf")
+set_target_properties(hello_world PROPERTIES SUFFIX ".elf")
 
-hecate_runtime_link(hello_world_rv32)
+hecate_runtime_link(hello_world)

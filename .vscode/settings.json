@@ -7,9 +7,11 @@
 	"cSpell.words": [
 		"alexellis",
 		"brainfck",
+		"buildx",
 		"byteorder",
 		"clippy",
 		"DCMAKE",
+		"debian",
 		"Deque",
 		"Ecall",
 		"FADD",
@@ -58,6 +60,7 @@
 		"syscall",
 		"syscalls",
 		"thiserror",
+		"trixie",
 		"vaddr",
 		"Zunstable"
 	],

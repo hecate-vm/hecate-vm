@@ -86,8 +86,8 @@ Manual CMake demo build:
 
 ```bash
 cmake -S examples -B build/examples -DCMAKE_TOOLCHAIN_FILE=$PWD/runtime/cmake/toolchains/riscv32-clang.cmake
-cmake --build build/examples --target hello_world_rv32
-cargo run -- run build/examples/hello_world_rv32.elf
+cmake --build build/examples --target hello_world
+cargo run -- run build/examples/hello_world.elf
 ```
 
 Rust demo build (Cargo cross-compile):
@@ -133,6 +133,15 @@ add_subdirectory(path/to/hecate-vm/runtime hecate-runtime)
 add_executable(my_program my_program.c)
 set_target_properties(my_program PROPERTIES SUFFIX ".elf")
 hecate_runtime_link(my_program)
+```
+
+Run the examples with docker:
+```bash
+docker buildx build -t hecate-vm .
+docker run --rm  hecate-vm run /examples/hello_world.elf
+docker run --rm  hecate-vm run /examples/rust_hello.elf
+docker run --rm  hecate-vm run /examples/vector_contiguous.elf
+docker run --rm  hecate-vm run /examples/linked_list.elf
 ```
 
 ---

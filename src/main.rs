@@ -5,9 +5,9 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
-use rvsim::elf::{Elf32, ELF_PROGRAM_TYPE_LOADABLE};
+use rvsim::elf::{ELF_PROGRAM_TYPE_LOADABLE, Elf32};
 use rvsim::{Clock, CpuError, CpuState, Interp, Memory, MemoryAccess, Op};
 use serde::Deserialize;
 

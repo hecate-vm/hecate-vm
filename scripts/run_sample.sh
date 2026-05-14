@@ -7,7 +7,7 @@ EXAMPLES_DIR="$ROOT_DIR/examples/hello_world"
 RUNTIME_DIR="$ROOT_DIR/runtime"
 TOOLCHAIN_DIR="$RUNTIME_DIR/cmake/toolchains"
 BUILD_DIR="$WORK_DIR/examples-build"
-ELF_FILE="$BUILD_DIR/hello_world_rv32.elf"
+ELF_FILE="$BUILD_DIR/hello_world.elf"
 
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -48,7 +48,7 @@ cmake \
 
 cmake \
   --build "$BUILD_DIR" \
-  --target hello_world_rv32
+  --target hello_world
 
 echo "Built sample ELF: $ELF_FILE"
 cd "$ROOT_DIR"

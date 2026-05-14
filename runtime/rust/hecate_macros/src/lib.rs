@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, ItemFn, ReturnType};
+use syn::{ItemFn, ReturnType, parse_macro_input};
 
 #[proc_macro_attribute]
 pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -66,7 +66,7 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #(#attrs)*
         #vis #sig #block
 
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub extern "C" fn _start() -> ! {
             #invoke
         }

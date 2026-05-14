@@ -1,7 +1,7 @@
 [package]
 name = "hecate-vm"
 version = "0.10.0"
-edition = "2021"
+edition = "2024"
 description = "The main package for the hecate vm"
 license-file = "LICENSE"
 repository = "https://github.com/hecate-vm/hecate-vm"

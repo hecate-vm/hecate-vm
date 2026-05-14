@@ -56,21 +56,23 @@ static mut NEXT: usize = 0;
 
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let align = layout.align();
-        let size = layout.size();
-        if size == 0 {
-            return null_mut();
-        }
+        unsafe {
+            let align = layout.align();
+            let size = layout.size();
+            if size == 0 {
+                return null_mut();
+            }
 
-        let aligned = (NEXT + (align - 1)) & !(align - 1);
-        let next = aligned.saturating_add(size);
-        if next > HEAP_SIZE {
-            return null_mut();
-        }
+            let aligned = (NEXT + (align - 1)) & !(align - 1);
+            let next = aligned.saturating_add(size);
+            if next > HEAP_SIZE {
+                return null_mut();
+            }
 
-        let base = core::ptr::addr_of_mut!(HEAP.0) as *mut u8;
-        NEXT = next;
-        base.add(aligned)
+            let base = core::ptr::addr_of_mut!(HEAP.0) as *mut u8;
+            NEXT = next;
+            base.add(aligned)
+        }
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
@@ -204,7 +206,7 @@ pub mod process {
 
 pub mod prelude {
     pub use crate::std::{String, Vec};
-    pub use crate::{hprint, hprintln, write_i32, write_u32, ExitCode, MainReturn};
+    pub use crate::{ExitCode, MainReturn, hprint, hprintln, write_i32, write_u32};
 }
 
 /* Minimal std-like compatibility layer for no_std + alloc apps. */
