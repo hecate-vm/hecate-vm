@@ -323,6 +323,30 @@
         let availableExamples = [];
         let lastExamplesSignature = null;
 
+        function formatHex32(value) {
+            return `0x${(Number(value || 0) >>> 0).toString(16).padStart(8, '0')}`;
+        }
+
+        function formatStopReason(stopReason) {
+            if (!stopReason) {
+                return '(unknown)';
+            }
+            if (typeof stopReason === 'string') {
+                return stopReason;
+            }
+
+            const kind = String(stopReason.kind || 'unknown');
+            const detail = stopReason.detail;
+            switch (kind) {
+                case 'breakpoint':
+                    return `Breakpoint @ ${formatHex32(detail && detail.pc)}`;
+                case 'cpuError':
+                    return `CPU Error: ${(detail && detail.error) || 'unknown'}`;
+                default:
+                    return kind.replace(/[A-Z]/g, (m) => ` ${m.toLowerCase()}`).replace(/^./, (c) => c.toUpperCase());
+            }
+        }
+
         function showMsg(text, isError = false) {
             const el = document.getElementById('msg');
             el.textContent = text;
@@ -432,7 +456,7 @@
                             let data = null;
                             try {
                                 data = JSON.parse(event.data);
-                            } catch {
+                            } catch (error) {
                                 return;
                             }
                             const id = data.id ?? data.seq;
@@ -504,90 +528,6 @@
             };
         }
 
-        function makeWasmAdapter() {
-            let vm = null;
-
-            async function ensureVm() {
-                if (vm) {
-                    return vm;
-                }
-
-                const module = await import('./assets/wasm/hecate_vm_wasm.js');
-                if (module.createHecateVm) {
-                    vm = await module.createHecateVm();
-                } else if (module.HecateVmWasm) {
-                    vm = new module.HecateVmWasm();
-                } else {
-                    throw new Error('WASM module missing createHecateVm/HecateVmWasm export');
-                }
-                return vm;
-            }
-
-            return {
-                kind: 'wasm',
-                async connect() {
-                    await ensureVm();
-                },
-                disconnect() { },
-                async listExamples() {
-                    const res = await fetch('/assets/examples.json');
-                    if (!res.ok) {
-                        return [];
-                    }
-                    const body = await res.json();
-                    return body.examples || [];
-                },
-                async command(commandName, args = {}) {
-                    const runtime = await ensureVm();
-
-                    if (commandName === 'launchBytes') {
-                        if (typeof runtime.loadBytes === 'function') {
-                            return await runtime.loadBytes(args.bytes, args.name);
-                        }
-                        if (typeof runtime.command === 'function') {
-                            return await runtime.command(commandName, args);
-                        }
-                        throw new Error('WASM runtime is missing loadBytes(bytes, name)');
-                    }
-
-                    if (commandName === 'launch' || commandName === 'load') {
-                        const path = args.path;
-                        if (!path) {
-                            throw new Error('Missing path for launch');
-                        }
-                        const res = await fetch(path);
-                        if (!res.ok) {
-                            throw new Error(`Failed to fetch example: ${path}`);
-                        }
-                        const bytes = new Uint8Array(await res.arrayBuffer());
-                        if (typeof runtime.loadBytes === 'function') {
-                            return await runtime.loadBytes(bytes, path.split('/').pop() || path);
-                        }
-                        if (typeof runtime.command === 'function') {
-                            return await runtime.command('launchBytes', {
-                                name: path.split('/').pop() || path,
-                                bytes,
-                            });
-                        }
-                        throw new Error('WASM runtime is missing loadBytes(bytes, name)');
-                    }
-
-                    if (typeof runtime.control === 'function') {
-                        const rsp = await runtime.control({ id: seq++, command: commandName, arguments: args });
-                        if (!rsp.success) {
-                            throw new Error(rsp.message || 'WASM command failed');
-                        }
-                        return rsp.body || {};
-                    }
-
-                    if (typeof runtime.command !== 'function') {
-                        throw new Error('WASM runtime is missing command(command, args)');
-                    }
-                    return await runtime.command(commandName, args);
-                },
-            };
-        }
-
         async function setActiveAdapter(nextAdapter, message) {
             if (adapter && typeof adapter.disconnect === 'function') {
                 adapter.disconnect();
@@ -602,33 +542,21 @@
             await refresh();
         }
 
-        async function fallbackToWasm(message) {
-            await setActiveAdapter(makeWasmAdapter(), message || 'WASM runtime initialized');
-        }
-
-        async function connectToRemoteOrFallback(wsUrl, fallbackMessage) {
+        async function connectToRemote(wsUrl) {
             const remoteAdapter = makeRemoteAdapter(wsUrl);
-            try {
-                let lastError = null;
-                for (let attempt = 0; attempt < 5; attempt++) {
-                    try {
-                        await setActiveAdapter(remoteAdapter, `Connected to ${wsUrl}`);
-                        return;
-                    } catch (error) {
-                        lastError = error;
-                        if (attempt < 4) {
-                            await wait(250);
-                        }
+            let lastError = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                try {
+                    await setActiveAdapter(remoteAdapter, `Connected to ${wsUrl}`);
+                    return;
+                } catch (error) {
+                    lastError = error;
+                    if (attempt < 4) {
+                        await wait(250);
                     }
                 }
-                throw lastError || new Error(`websocket connection failed: ${wsUrl}`);
-            } catch (error) {
-                try {
-                    await fallbackToWasm(fallbackMessage || `Could not connect to ${wsUrl}; using WASM instead`);
-                } catch (fallbackError) {
-                    showMsg(fallbackError.message || String(fallbackError), true);
-                }
             }
+            throw lastError || new Error(`websocket connection failed: ${wsUrl}`);
         }
 
         async function control(command, args = {}) {
@@ -639,7 +567,7 @@
         }
 
         function currentLoadedExampleName() {
-            const loaded = currentSnapshot?.loaded_path || '';
+            const loaded = (currentSnapshot && currentSnapshot.loadedBinaryName) || '';
             const match = availableExamples.find((example) => example.name === loaded || example.path === loaded);
             return match ? match.name : '';
         }
@@ -679,7 +607,7 @@
         }
 
         async function confirmBeforeReplacingBinary() {
-            const instret = Number(currentSnapshot?.stats?.instret || 0);
+            const instret = Number((currentSnapshot && currentSnapshot.stats && currentSnapshot.stats.instret) || 0);
             if (instret === 0) {
                 return true;
             }
@@ -696,11 +624,11 @@
 
                 currentSnapshot = state;
                 updateStatusPill(!!state.running);
-                document.getElementById('pc').textContent = state.pc_hex;
-                document.getElementById('entry').textContent = state.entry_hex;
-                document.getElementById('loaded').textContent = state.loaded_path || '(none)';
-                document.getElementById('stop').textContent = state.last_stop_reason;
-                renderInstructionWithLink(state.current_instruction);
+                document.getElementById('pc').textContent = formatHex32(state.pc);
+                document.getElementById('entry').textContent = formatHex32(state.entryPoint);
+                document.getElementById('loaded').textContent = state.loadedBinaryName || '(none)';
+                document.getElementById('stop').textContent = formatStopReason(state.stopReason);
+                renderInstructionWithLink((state.currentInstruction && state.currentInstruction.text) || 'Unavailable');
                 document.getElementById('cycles').textContent = String(state.stats.cycles);
                 document.getElementById('instret').textContent = String(state.stats.instret);
                 document.getElementById('syscalls').textContent = String(state.stats.syscall_count);
@@ -722,8 +650,8 @@
         async function loadExample(path) {
             const body = await control('launch', { path });
             showMsg(`Loaded example: ${path}`);
-            if (body.entry_hex) {
-                showMsg(`Loaded example: ${path} @ ${body.entry_hex}`);
+            if (body.entryHex) {
+                showMsg(`Loaded example: ${path} @ ${body.entryHex}`);
             }
             await refresh();
         }
@@ -731,7 +659,7 @@
         async function loadUploadedFile(file) {
             const bytes = new Uint8Array(await file.arrayBuffer());
             const body = await control('launchBytes', { name: file.name, bytes });
-            showMsg(`Loaded binary: ${file.name}${body.entry_hex ? ` @ ${body.entry_hex}` : ''}`);
+            showMsg(`Loaded binary: ${file.name}${body.entryHex ? ` @ ${body.entryHex}` : ''}`);
             await refresh();
         }
 
@@ -741,7 +669,11 @@
                 showMsg('Please enter a websocket URL', true);
                 return;
             }
-            await connectToRemoteOrFallback(wsUrl, `Could not connect to ${wsUrl}; using WASM instead`);
+            try {
+                await connectToRemote(wsUrl);
+            } catch (error) {
+                showMsg(error.message || String(error), true);
+            }
         });
 
         document.getElementById('example-select').addEventListener('change', async (event) => {
@@ -833,14 +765,18 @@
             const len = parseMaybeHex(document.getElementById('mem-len').value);
             try {
                 const body = await control('readMemory', { addr, len });
-                const bytes = body.bytes || [];
+                const result = body.result || {};
+                const bytes = result.bytes || [];
                 const lines = [];
                 for (let i = 0; i < bytes.length; i += 16) {
                     const row = bytes.slice(i, i + 16).map((b) => Number(b).toString(16).padStart(2, '0')).join(' ');
-                    const rowAddr = (body.addr + i) >>> 0;
+                    const rowAddr = ((result.addr || addr) + i) >>> 0;
                     lines.push(`0x${rowAddr.toString(16).padStart(8, '0')}: ${row}`);
                 }
                 document.getElementById('mem-view').textContent = lines.join('\n') || '(empty)';
+                if (result.kind === 'partial') {
+                    showMsg(`Partial memory read: requested ${result.requested_len} bytes, received ${result.available_len}`);
+                }
             } catch (error) {
                 showMsg(error.message || String(error), true);
             }
@@ -852,13 +788,12 @@
             const wsUrl = defaultWsUrl();
             document.getElementById('ws-url').value = wsUrl;
             restartTimer();
+            showMsg('UI ready. Click Connect to attach to the VM.');
 
             if (isGitHubPages()) {
-                await fallbackToWasm('WASM runtime initialized');
+                showMsg('Static hosting without the websocket backend is no longer supported by this page.', true);
                 return;
             }
-
-            await connectToRemoteOrFallback(wsUrl, `Could not connect to ${wsUrl}; using WASM instead`);
         }
 
         boot().catch((error) => {

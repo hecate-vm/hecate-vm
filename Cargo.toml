@@ -7,6 +7,9 @@ license-file = "LICENSE"
 repository = "https://github.com/hecate-vm/hecate-vm"
 build = "build.rs"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 anyhow = "1.0.95"
 base64 = "0.22"
@@ -14,6 +17,7 @@ clap = { version = "4.5.22", features = ["derive"] }
 rvsim = { git = "https://github.com/hecate-vm/rvsim", version = "0.2.2", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tiny_http = "0.12"
 toml = "0.8"
 tungstenite = "0.24"

@@ -1,22 +1,18 @@
-use std::cell::RefCell;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use anyhow::{Context, anyhow};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use rvsim::{CpuError, CpuState, Interp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use tungstenite::{Message, accept};
 
-use crate::{
-    HecateClock, HecateMemory, RunStats, SimConfig, handle_syscall, load_elf, load_elf_bytes,
-    syscall_cycles_for,
+use crate::vm::{
+    HecateVm, MemoryReadResult, ResetMemoryPolicy, SimConfig, VmDump, VmRuntimeOptions,
 };
 
 const UI_HTML: &str = include_str!("assets/index.html");
@@ -30,6 +26,12 @@ struct ControlRequest {
     request_type: Option<String>,
     command: String,
     arguments: Option<Value>,
+}
+
+impl ControlRequest {
+    fn request_id(&self) -> u64 {
+        self.id.unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -48,59 +50,24 @@ struct ExampleEntry {
     path: String,
 }
 
-#[derive(Debug, Clone)]
-enum LoadedProgramSource {
-    Builtin { name: String, bytes: &'static [u8] },
-    Uploaded { name: String, bytes: Vec<u8> },
-    File { path: PathBuf, display_name: String },
-}
-
-impl LoadedProgramSource {
-    fn display_name(&self) -> &str {
-        match self {
-            Self::Builtin { name, .. } => name.as_str(),
-            Self::Uploaded { name, .. } => name.as_str(),
-            Self::File { display_name, .. } => display_name.as_str(),
-        }
-    }
-}
-
-impl ControlRequest {
-    fn request_id(&self) -> u64 {
-        self.id.unwrap_or(0)
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct DebugSnapshot {
-    running: bool,
-    halted: bool,
-    pc: u32,
-    pc_hex: String,
-    entry: u32,
-    entry_hex: String,
-    loaded_path: Option<String>,
-    last_stop_reason: String,
-    current_instruction: String,
-    current_instruction_hex: Option<String>,
-    current_instruction_size: Option<u32>,
-    current_instruction_bytes: Option<String>,
-    registers: Vec<u32>,
-    stats: RunStats,
-}
-
 #[derive(Debug)]
 enum VmCommand {
     Initialize,
     Examples,
-    Launch { path: String },
-    LaunchBytes { name: String, bytes: Vec<u8> },
-    Continue,
+    LoadBlob { name: String, bytes: Vec<u8> },
+    LoadPath { path: String },
+    Run,
     Pause,
-    Next { count: u64 },
-    Restart,
-    ReadMemory { addr: u32, len: u32 },
+    Step,
+    StepCount { count: u64 },
+    StepOver,
+    StepOut,
+    Reset { policy: ResetMemoryPolicy },
+    Read { addr: u32, len: u32 },
+    Write { addr: u32, bytes: Vec<u8> },
     State,
+    Dump,
+    Restore { dump: VmDump },
     Shutdown,
 }
 
@@ -108,11 +75,26 @@ enum VmCommand {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum VmReply {
     Ack,
-    Loaded { entry: u32, entry_hex: String },
-    Examples { examples: Vec<ExampleEntry> },
-    State { state: DebugSnapshot },
-    Memory { addr: u32, len: u32, bytes: Vec<u8> },
-    Error { message: String },
+    Loaded {
+        entry: u32,
+        entry_hex: String,
+        state: Value,
+    },
+    Examples {
+        examples: Vec<ExampleEntry>,
+    },
+    State {
+        state: Value,
+    },
+    Memory {
+        result: MemoryReadResult,
+    },
+    Dump {
+        dump: VmDump,
+    },
+    Error {
+        message: String,
+    },
 }
 
 struct Envelope {
@@ -120,482 +102,23 @@ struct Envelope {
     tx: Sender<VmReply>,
 }
 
-#[derive(Debug)]
-struct DebugMachine {
-    cache_line_size: u32,
-    l1_size: u32,
-    l2_size: u32,
-    l3_size: u32,
-    max_instructions: Option<u64>,
-    config: SimConfig,
-
-    shared_stats: Rc<RefCell<RunStats>>,
-    memory: HecateMemory,
-    state: CpuState,
-    clock: HecateClock,
-
-    loaded_path: Option<String>,
-    loaded_source: Option<LoadedProgramSource>,
-    entry: u32,
-    halted: bool,
-    running: bool,
-    last_stop_reason: String,
+fn builtin_examples() -> Vec<ExampleEntry> {
+    let mut examples = crate::bundled_examples::EXAMPLES
+        .iter()
+        .map(|example| ExampleEntry {
+            name: example.name.to_string(),
+            path: example.name.to_string(),
+        })
+        .collect::<Vec<_>>();
+    examples.sort_by(|a, b| a.name.cmp(&b.name));
+    examples
 }
 
-impl DebugMachine {
-    fn new(
-        initial_path: Option<PathBuf>,
-        cache_line_size: u32,
-        l1_size: u32,
-        l2_size: u32,
-        l3_size: u32,
-        max_instructions: Option<u64>,
-        config: SimConfig,
-    ) -> anyhow::Result<Self> {
-        let shared_stats = Rc::new(RefCell::new(RunStats::default()));
-        let memory = HecateMemory::new(
-            Rc::clone(&shared_stats),
-            cache_line_size,
-            l1_size,
-            l2_size,
-            l3_size,
-            &config,
-        );
-
-        let mut machine = Self {
-            cache_line_size,
-            l1_size,
-            l2_size,
-            l3_size,
-            max_instructions,
-            config,
-            shared_stats: Rc::clone(&shared_stats),
-            memory,
-            state: CpuState::new(0),
-            clock: HecateClock::new(Rc::clone(&shared_stats), max_instructions),
-            loaded_path: None,
-            loaded_source: None,
-            entry: 0,
-            halted: true,
-            running: false,
-            last_stop_reason: "No program loaded".to_string(),
-        };
-
-        if let Some(path) = initial_path {
-            machine.load_program(path)?;
-        }
-
-        Ok(machine)
-    }
-
-    fn reset_memory_and_clock(&mut self) {
-        self.memory = HecateMemory::new(
-            Rc::clone(&self.shared_stats),
-            self.cache_line_size,
-            self.l1_size,
-            self.l2_size,
-            self.l3_size,
-            &self.config,
-        );
-        self.clock = HecateClock::new(Rc::clone(&self.shared_stats), self.max_instructions);
-    }
-
-    fn clear_stats(&mut self) {
-        *self.shared_stats.borrow_mut() = RunStats::default();
-    }
-
-    fn load_program_source(&mut self, source: LoadedProgramSource) -> anyhow::Result<()> {
-        self.clear_stats();
-        self.reset_memory_and_clock();
-
-        let display_name = source.display_name().to_string();
-        let entry = match &source {
-            LoadedProgramSource::Builtin { name, bytes } => {
-                load_elf_bytes(name, bytes, &mut self.memory)
-                    .with_context(|| format!("Failed to load builtin example: {name}"))?
-            }
-            LoadedProgramSource::Uploaded { name, bytes } => {
-                load_elf_bytes(name, bytes, &mut self.memory)
-                    .with_context(|| format!("Failed to load uploaded program: {name}"))?
-            }
-            LoadedProgramSource::File { path, .. } => load_elf(path, &mut self.memory)
-                .with_context(|| format!("Failed to load program: {}", path.display()))?,
-        };
-
-        self.entry = entry;
-        self.state = CpuState::new(entry);
-        self.loaded_path = Some(display_name);
-        self.loaded_source = Some(source);
-        self.halted = false;
-        self.running = false;
-        self.last_stop_reason = "Program loaded".to_string();
-        Ok(())
-    }
-
-    fn load_program(&mut self, path: PathBuf) -> anyhow::Result<()> {
-        let source = resolve_program_source(path)?;
-        self.load_program_source(source)
-    }
-
-    fn load_uploaded_program(&mut self, name: String, bytes: Vec<u8>) -> anyhow::Result<()> {
-        self.load_program_source(LoadedProgramSource::Uploaded { name, bytes })
-    }
-
-    fn reset_to_beginning(&mut self) -> anyhow::Result<()> {
-        let Some(source) = self.loaded_source.clone() else {
-            return Err(anyhow!("No loaded program to reset"));
-        };
-        self.load_program_source(source)
-    }
-
-    fn effective_quota(&self, local_quota: Option<u64>) -> Option<u64> {
-        match (self.max_instructions, local_quota) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        }
-    }
-
-    fn run_until(&mut self, local_quota: Option<u64>) {
-        if self.halted {
-            return;
-        }
-
-        let cap = self.effective_quota(local_quota);
-        self.clock.set_max_instructions(cap);
-
-        loop {
-            let (error, _last_op) = {
-                let mut interp = Interp::new(&mut self.state, &mut self.memory, &mut self.clock);
-                interp.run()
-            };
-
-            if error != CpuError::Ecall {
-                let reached_cap = cap
-                    .map(|limit| self.shared_stats.borrow().instret >= limit)
-                    .unwrap_or(false);
-
-                if reached_cap {
-                    self.last_stop_reason = "QuotaReached".to_string();
-                } else {
-                    self.halted = true;
-                    self.running = false;
-                    self.last_stop_reason = format!("{:?}", error);
-                }
-                break;
-            }
-
-            let syscall_code = self.state.x[17];
-            let syscall_cycles = syscall_cycles_for(
-                syscall_code,
-                self.config.default_syscall_cycles,
-                &self.config.syscall_cycles,
-            );
-            {
-                let mut stats = self.shared_stats.borrow_mut();
-                stats.instret = stats.instret.wrapping_add(1);
-                stats.syscall_count = stats.syscall_count.wrapping_add(1);
-                stats.syscall_cycles = stats.syscall_cycles.wrapping_add(syscall_cycles);
-                stats.cycles = stats.cycles.wrapping_add(syscall_cycles);
-                *stats.syscall_hits.entry(syscall_code).or_insert(0) += 1;
-                *stats.syscall_cycle_totals.entry(syscall_code).or_insert(0) += syscall_cycles;
-            }
-
-            let (should_continue, extra_cycles, io_bytes_written) =
-                handle_syscall(&mut self.state, &self.memory, &self.config, syscall_code);
-
-            if extra_cycles != 0 || io_bytes_written != 0 {
-                let mut stats = self.shared_stats.borrow_mut();
-                stats.io_cycles = stats.io_cycles.wrapping_add(extra_cycles);
-                stats.io_bytes_written = stats.io_bytes_written.wrapping_add(io_bytes_written);
-                stats.syscall_cycles = stats.syscall_cycles.wrapping_add(extra_cycles);
-                stats.cycles = stats.cycles.wrapping_add(extra_cycles);
-                *stats.syscall_cycle_totals.entry(syscall_code).or_insert(0) += extra_cycles;
-            }
-
-            if !should_continue {
-                self.halted = true;
-                self.running = false;
-                self.last_stop_reason = "Program exited".to_string();
-                break;
-            }
-
-            self.state.pc = self.state.pc.wrapping_add(4);
-        }
-    }
-
-    fn step(&mut self, count: u64) -> anyhow::Result<()> {
-        if self.halted {
-            return Err(anyhow!("Program is halted or not loaded"));
-        }
-        let current = self.shared_stats.borrow().instret;
-        let target = current.saturating_add(count.max(1));
-        self.running = false;
-        self.run_until(Some(target));
-        if !self.halted {
-            self.last_stop_reason = "Step complete".to_string();
-        }
-        Ok(())
-    }
-
-    fn continue_run_quantum(&mut self, quantum: u64) {
-        if self.halted {
-            self.running = false;
-            return;
-        }
-        let current = self.shared_stats.borrow().instret;
-        let target = current.saturating_add(quantum.max(1));
-        self.run_until(Some(target));
-        if !self.halted && self.running {
-            self.last_stop_reason = "Running".to_string();
-        }
-    }
-
-    fn read_memory(&self, addr: u32, len: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity(len as usize);
-        for i in 0..len {
-            out.push(
-                self.memory
-                    .bytes
-                    .get(&addr.wrapping_add(i))
-                    .copied()
-                    .unwrap_or(0),
-            );
-        }
-        out
-    }
-
-    fn snapshot(&self) -> DebugSnapshot {
-        let (instr_text, instr_hex, instr_size, instr_bytes) = self.current_instruction();
-        let stats = self.shared_stats.borrow().clone();
-        DebugSnapshot {
-            running: self.running,
-            halted: self.halted,
-            pc: self.state.pc,
-            pc_hex: format!("0x{:08x}", self.state.pc),
-            entry: self.entry,
-            entry_hex: format!("0x{:08x}", self.entry),
-            loaded_path: self.loaded_path.clone(),
-            last_stop_reason: self.last_stop_reason.clone(),
-            current_instruction: instr_text,
-            current_instruction_hex: instr_hex,
-            current_instruction_size: instr_size,
-            current_instruction_bytes: instr_bytes,
-            registers: self.state.x.to_vec(),
-            stats,
-        }
-    }
-
-    fn current_instruction(&self) -> (String, Option<String>, Option<u32>, Option<String>) {
-        let pc = self.state.pc;
-
-        let b0 = self.memory.bytes.get(&pc).copied();
-        let b1 = self.memory.bytes.get(&pc.wrapping_add(1)).copied();
-        let (Some(b0), Some(b1)) = (b0, b1) else {
-            return (
-                "Unavailable (memory unmapped at PC)".to_string(),
-                None,
-                None,
-                None,
-            );
-        };
-
-        let halfword = (b0 as u16) | ((b1 as u16) << 8);
-        if (halfword & 0b11) != 0b11 {
-            let raw = halfword as u32;
-            let bytes = format!("{:02x} {:02x}", b0, b1);
-            let mnemonic = decode_rvc_mnemonic(halfword);
-            return (
-                format!("{} ({})", mnemonic, bytes),
-                Some(format!("0x{:04x}", raw as u16)),
-                Some(2),
-                Some(bytes),
-            );
-        }
-
-        let b2 = self.memory.bytes.get(&pc.wrapping_add(2)).copied();
-        let b3 = self.memory.bytes.get(&pc.wrapping_add(3)).copied();
-        let (Some(b2), Some(b3)) = (b2, b3) else {
-            let bytes = format!("{:02x} {:02x}", b0, b1);
-            return (
-                "Unavailable (incomplete 32-bit instruction at PC)".to_string(),
-                None,
-                None,
-                Some(bytes),
-            );
-        };
-
-        let raw = (b0 as u32) | ((b1 as u32) << 8) | ((b2 as u32) << 16) | ((b3 as u32) << 24);
-        let bytes = format!("{:02x} {:02x} {:02x} {:02x}", b0, b1, b2, b3);
-        let mnemonic = decode_rv32_mnemonic(raw, pc);
-        (
-            format!("{} ({})", mnemonic, bytes),
-            Some(format!("0x{:08x}", raw)),
-            Some(4),
-            Some(bytes),
-        )
-    }
-}
-
-fn xreg(reg: u32) -> String {
-    format!("x{}", reg)
-}
-
-fn sign_extend(value: u32, width: u32) -> i32 {
-    let shift = 32 - width;
-    ((value << shift) as i32) >> shift
-}
-
-fn decode_rvc_mnemonic(inst: u16) -> String {
-    let funct3 = (inst >> 13) & 0x7;
-    let quadrant = inst & 0x3;
-
-    match (quadrant, funct3) {
-        (0b01, 0b000) => "c.addi".to_string(),
-        (0b01, 0b010) => "c.li".to_string(),
-        (0b01, 0b011) => "c.lui/addi16sp".to_string(),
-        (0b01, 0b100) => "c.misc-alu".to_string(),
-        (0b01, 0b101) => "c.j".to_string(),
-        (0b01, 0b110) => "c.beqz".to_string(),
-        (0b01, 0b111) => "c.bnez".to_string(),
-        (0b10, 0b100) => "c.jr/mv/ebreak/jalr/add".to_string(),
-        _ => "c.unknown".to_string(),
-    }
-}
-
-fn decode_rv32_mnemonic(inst: u32, pc: u32) -> String {
-    let opcode = inst & 0x7f;
-    let rd = (inst >> 7) & 0x1f;
-    let funct3 = (inst >> 12) & 0x7;
-    let rs1 = (inst >> 15) & 0x1f;
-    let rs2 = (inst >> 20) & 0x1f;
-    let funct7 = (inst >> 25) & 0x7f;
-
-    let imm_i = sign_extend(inst >> 20, 12);
-    let imm_s = sign_extend(((inst >> 25) << 5) | ((inst >> 7) & 0x1f), 12);
-    let imm_b = sign_extend(
-        ((inst >> 31) << 12)
-            | (((inst >> 7) & 0x1) << 11)
-            | (((inst >> 25) & 0x3f) << 5)
-            | (((inst >> 8) & 0xf) << 1),
-        13,
-    );
-    let imm_u = inst & 0xffff_f000;
-    let imm_j = sign_extend(
-        ((inst >> 31) << 20)
-            | (((inst >> 12) & 0xff) << 12)
-            | (((inst >> 20) & 0x1) << 11)
-            | (((inst >> 21) & 0x3ff) << 1),
-        21,
-    );
-
-    match opcode {
-        0x37 => format!("lui {}, 0x{:x}", xreg(rd), imm_u),
-        0x17 => format!("auipc {}, 0x{:x}", xreg(rd), imm_u),
-        0x6f => format!(
-            "jal {}, {} -> 0x{:08x}",
-            xreg(rd),
-            imm_j,
-            pc.wrapping_add(imm_j as u32)
-        ),
-        0x67 => format!("jalr {}, {}({})", xreg(rd), imm_i, xreg(rs1)),
-        0x63 => {
-            let mnem = match funct3 {
-                0b000 => "beq",
-                0b001 => "bne",
-                0b100 => "blt",
-                0b101 => "bge",
-                0b110 => "bltu",
-                0b111 => "bgeu",
-                _ => "b?",
-            };
-            format!(
-                "{} {}, {}, {} -> 0x{:08x}",
-                mnem,
-                xreg(rs1),
-                xreg(rs2),
-                imm_b,
-                pc.wrapping_add(imm_b as u32)
-            )
-        }
-        0x03 => {
-            let mnem = match funct3 {
-                0b000 => "lb",
-                0b001 => "lh",
-                0b010 => "lw",
-                0b100 => "lbu",
-                0b101 => "lhu",
-                _ => "l?",
-            };
-            format!("{} {}, {}({})", mnem, xreg(rd), imm_i, xreg(rs1))
-        }
-        0x23 => {
-            let mnem = match funct3 {
-                0b000 => "sb",
-                0b001 => "sh",
-                0b010 => "sw",
-                _ => "s?",
-            };
-            format!("{} {}, {}({})", mnem, xreg(rs2), imm_s, xreg(rs1))
-        }
-        0x13 => match funct3 {
-            0b000 => format!("addi {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
-            0b010 => format!("slti {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
-            0b011 => format!("sltiu {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
-            0b100 => format!("xori {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
-            0b110 => format!("ori {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
-            0b111 => format!("andi {}, {}, {}", xreg(rd), xreg(rs1), imm_i),
-            0b001 => {
-                let shamt = (inst >> 20) & 0x1f;
-                format!("slli {}, {}, {}", xreg(rd), xreg(rs1), shamt)
-            }
-            0b101 => {
-                let shamt = (inst >> 20) & 0x1f;
-                if funct7 == 0x20 {
-                    format!("srai {}, {}, {}", xreg(rd), xreg(rs1), shamt)
-                } else {
-                    format!("srli {}, {}, {}", xreg(rd), xreg(rs1), shamt)
-                }
-            }
-            _ => "i-unknown".to_string(),
-        },
-        0x33 => {
-            let mnem = match (funct7, funct3) {
-                (0x00, 0b000) => "add",
-                (0x20, 0b000) => "sub",
-                (0x00, 0b001) => "sll",
-                (0x00, 0b010) => "slt",
-                (0x00, 0b011) => "sltu",
-                (0x00, 0b100) => "xor",
-                (0x00, 0b101) => "srl",
-                (0x20, 0b101) => "sra",
-                (0x00, 0b110) => "or",
-                (0x00, 0b111) => "and",
-                (0x01, 0b000) => "mul",
-                (0x01, 0b001) => "mulh",
-                (0x01, 0b010) => "mulhsu",
-                (0x01, 0b011) => "mulhu",
-                (0x01, 0b100) => "div",
-                (0x01, 0b101) => "divu",
-                (0x01, 0b110) => "rem",
-                (0x01, 0b111) => "remu",
-                _ => "r-unknown",
-            };
-            format!("{} {}, {}, {}", mnem, xreg(rd), xreg(rs1), xreg(rs2))
-        }
-        0x73 => {
-            if inst == 0x0000_0073 {
-                "ecall".to_string()
-            } else if inst == 0x0010_0073 {
-                "ebreak".to_string()
-            } else {
-                "system".to_string()
-            }
-        }
-        0x0f => "fence".to_string(),
-        _ => format!("unknown(opcode=0x{:02x})", opcode),
-    }
+fn builtin_example_by_name(name: &str) -> Option<&'static [u8]> {
+    crate::bundled_examples::EXAMPLES
+        .iter()
+        .find(|example| example.name == name)
+        .map(|example| example.bytes)
 }
 
 fn parse_u32_value(v: Option<&Value>, key: &str, default: u32) -> anyhow::Result<u32> {
@@ -666,29 +189,112 @@ fn parse_base64_bytes(v: Option<&Value>, key: &str) -> anyhow::Result<Vec<u8>> {
         .map_err(|e| anyhow!("invalid base64 value for {key}: {e}"))
 }
 
+fn parse_write_bytes(v: Option<&Value>) -> anyhow::Result<Vec<u8>> {
+    let Some(args) = v else {
+        return Err(anyhow!("missing arguments"));
+    };
+
+    if let Some(value) = args.get("bytesBase64") {
+        let Some(encoded) = value.as_str() else {
+            return Err(anyhow!("argument bytesBase64 must be a string"));
+        };
+        return BASE64_STANDARD
+            .decode(encoded)
+            .map_err(|e| anyhow!("invalid base64 value for bytesBase64: {e}"));
+    }
+
+    let Some(value) = args.get("bytes") else {
+        return Err(anyhow!("missing argument: bytes or bytesBase64"));
+    };
+    let Some(items) = value.as_array() else {
+        return Err(anyhow!("argument bytes must be an array of integers"));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(byte) = item.as_u64() else {
+            return Err(anyhow!("argument bytes must be an array of integers"));
+        };
+        if byte > u8::MAX as u64 {
+            return Err(anyhow!("byte value {byte} is outside the range 0..=255"));
+        }
+        out.push(byte as u8);
+    }
+    Ok(out)
+}
+
+fn parse_reset_policy(v: Option<&Value>) -> anyhow::Result<ResetMemoryPolicy> {
+    let Some(args) = v else {
+        return Ok(ResetMemoryPolicy::Ignore);
+    };
+    let Some(raw) = args.get("policy") else {
+        return Ok(ResetMemoryPolicy::Ignore);
+    };
+    let Some(value) = raw.as_str() else {
+        return Err(anyhow!("argument policy must be a string"));
+    };
+    match value {
+        "ignore" => Ok(ResetMemoryPolicy::Ignore),
+        "zero" => Ok(ResetMemoryPolicy::Zero),
+        "random" | "randomize" => Ok(ResetMemoryPolicy::Randomize),
+        _ => Err(anyhow!("unsupported reset policy: {value}")),
+    }
+}
+
+fn parse_dump_value(v: Option<&Value>) -> anyhow::Result<VmDump> {
+    let Some(args) = v else {
+        return Err(anyhow!("missing arguments"));
+    };
+    let Some(raw) = args.get("dump") else {
+        return Err(anyhow!("missing argument: dump"));
+    };
+    serde_json::from_value(raw.clone()).map_err(|e| anyhow!("invalid dump payload: {e}"))
+}
+
+fn load_path_or_builtin(vm: &mut HecateVm, path: String) -> anyhow::Result<Value> {
+    let candidate = PathBuf::from(&path);
+    let state = if candidate.exists() {
+        vm.load_file(&candidate)?
+    } else if let Some(bytes) = builtin_example_by_name(&path) {
+        vm.load(path, bytes)?
+    } else {
+        return Err(anyhow!(
+            "Unknown example or missing file: {}",
+            candidate.display()
+        ));
+    };
+    serde_json::to_value(state).map_err(|e| anyhow!("failed to serialize VM state: {e}"))
+}
+
+fn state_value(vm: &HecateVm) -> VmReply {
+    match serde_json::to_value(vm.state()) {
+        Ok(state) => VmReply::State { state },
+        Err(e) => VmReply::Error {
+            message: format!("failed to serialize VM state: {e}"),
+        },
+    }
+}
+
+fn state_reply_from_snapshot(state: crate::vm::VmState) -> anyhow::Result<VmReply> {
+    Ok(VmReply::State {
+        state: serde_json::to_value(state)
+            .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
+    })
+}
+
 fn worker_loop(
     rx: Receiver<Envelope>,
     initial_path: Option<PathBuf>,
-    cache_line_size: u32,
-    l1_size: u32,
-    l2_size: u32,
-    l3_size: u32,
-    max_instructions: Option<u64>,
+    options: VmRuntimeOptions,
     config: SimConfig,
 ) -> anyhow::Result<()> {
-    let mut vm = DebugMachine::new(
-        initial_path,
-        cache_line_size,
-        l1_size,
-        l2_size,
-        l3_size,
-        max_instructions,
-        config,
-    )?;
+    let mut vm = HecateVm::new(options, config);
+    if let Some(path) = initial_path {
+        vm.load_file(&path)?;
+    }
 
     loop {
-        if vm.running && !vm.halted {
-            vm.continue_run_quantum(5_000);
+        if vm.is_running() && !vm.is_halted() {
+            vm.tick_running(5_000);
             while let Ok(env) = rx.try_recv() {
                 if handle_command(&mut vm, env)? {
                     return Ok(());
@@ -709,74 +315,107 @@ fn worker_loop(
     Ok(())
 }
 
-fn handle_command(vm: &mut DebugMachine, env: Envelope) -> anyhow::Result<bool> {
+fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
     let reply = match env.cmd {
         VmCommand::Initialize => VmReply::Ack,
         VmCommand::Examples => VmReply::Examples {
             examples: builtin_examples(),
         },
-        VmCommand::Launch { path } => {
-            let p = PathBuf::from(path);
-            match vm.load_program(p) {
-                Ok(()) => VmReply::Loaded {
-                    entry: vm.entry,
-                    entry_hex: format!("0x{:08x}", vm.entry),
-                },
-                Err(e) => VmReply::Error {
-                    message: e.to_string(),
-                },
-            }
-        }
-        VmCommand::LaunchBytes { name, bytes } => match vm.load_uploaded_program(name, bytes) {
-            Ok(()) => VmReply::Loaded {
-                entry: vm.entry,
-                entry_hex: format!("0x{:08x}", vm.entry),
+        VmCommand::LoadBlob { name, bytes } => match vm.load(name, &bytes) {
+            Ok(state) => VmReply::Loaded {
+                entry: state.entry_point,
+                entry_hex: format!("0x{:08x}", state.entry_point),
+                state: serde_json::to_value(state)
+                    .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
             },
             Err(e) => VmReply::Error {
                 message: e.to_string(),
             },
         },
-        VmCommand::Continue => {
-            if vm.halted {
-                VmReply::Error {
-                    message: "Program is halted or not loaded".to_string(),
-                }
-            } else {
-                vm.running = true;
-                vm.last_stop_reason = "Running".to_string();
-                VmReply::Ack
-            }
-        }
-        VmCommand::Pause => {
-            vm.running = false;
-            vm.last_stop_reason = "Paused by client".to_string();
-            VmReply::State {
-                state: vm.snapshot(),
-            }
-        }
-        VmCommand::Next { count } => match vm.step(count) {
-            Ok(()) => VmReply::State {
-                state: vm.snapshot(),
+        VmCommand::LoadPath { path } => match load_path_or_builtin(vm, path) {
+            Ok(state) => VmReply::Loaded {
+                entry: vm.entry_point(),
+                entry_hex: format!("0x{:08x}", vm.entry_point()),
+                state,
             },
             Err(e) => VmReply::Error {
                 message: e.to_string(),
             },
         },
-        VmCommand::Restart => match vm.reset_to_beginning() {
-            Ok(()) => VmReply::State {
-                state: vm.snapshot(),
+        VmCommand::Run => match vm.run() {
+            Ok(()) => VmReply::Ack,
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
+        },
+        VmCommand::Pause => state_reply_from_snapshot(vm.pause())?,
+        VmCommand::Step => match vm.step() {
+            Ok(state) => VmReply::State {
+                state: serde_json::to_value(state)
+                    .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
             },
             Err(e) => VmReply::Error {
                 message: e.to_string(),
             },
         },
-        VmCommand::ReadMemory { addr, len } => VmReply::Memory {
-            addr,
-            len,
-            bytes: vm.read_memory(addr, len),
+        VmCommand::StepCount { count } => match vm.step_count(count) {
+            Ok(state) => VmReply::State {
+                state: serde_json::to_value(state)
+                    .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
+            },
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
         },
-        VmCommand::State => VmReply::State {
-            state: vm.snapshot(),
+        VmCommand::StepOver => match vm.step_over() {
+            Ok(state) => VmReply::State {
+                state: serde_json::to_value(state)
+                    .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
+            },
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
+        },
+        VmCommand::StepOut => match vm.step_out() {
+            Ok(state) => VmReply::State {
+                state: serde_json::to_value(state)
+                    .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
+            },
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
+        },
+        VmCommand::Reset { policy } => match vm.reset(policy) {
+            Ok(state) => VmReply::State {
+                state: serde_json::to_value(state)
+                    .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
+            },
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
+        },
+        VmCommand::Read { addr, len } => match vm.read(addr, len) {
+            Ok(result) => VmReply::Memory { result },
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
+        },
+        VmCommand::Write { addr, bytes } => match vm.write(addr, &bytes) {
+            Ok(()) => state_value(vm),
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
+        },
+        VmCommand::State => state_value(vm),
+        VmCommand::Dump => VmReply::Dump { dump: vm.dump() },
+        VmCommand::Restore { dump } => match vm.restore(dump) {
+            Ok(state) => VmReply::State {
+                state: serde_json::to_value(state)
+                    .map_err(|e| anyhow!("failed to serialize VM state: {e}"))?,
+            },
+            Err(e) => VmReply::Error {
+                message: e.to_string(),
+            },
         },
         VmCommand::Shutdown => {
             let _ = env.tx.send(VmReply::Ack);
@@ -795,6 +434,85 @@ fn send_command(tx: &Sender<Envelope>, cmd: VmCommand) -> anyhow::Result<VmReply
     resp_rx
         .recv()
         .context("failed to receive response from VM thread")
+}
+
+fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
+    let args = req.arguments.as_ref();
+    let cmd = match req.command.as_str() {
+        "initialize" => VmCommand::Initialize,
+        "examples" => VmCommand::Examples,
+        "load" => {
+            if args.and_then(|value| value.get("bytesBase64")).is_some() {
+                VmCommand::LoadBlob {
+                    name: parse_string_value(args, "name")?,
+                    bytes: parse_base64_bytes(args, "bytesBase64")?,
+                }
+            } else {
+                VmCommand::LoadPath {
+                    path: parse_string_value(args, "path")?,
+                }
+            }
+        }
+        "launch" | "loadFile" => VmCommand::LoadPath {
+            path: parse_string_value(args, "path")?,
+        },
+        "launchBytes" | "upload" => VmCommand::LoadBlob {
+            name: parse_string_value(args, "name")?,
+            bytes: parse_base64_bytes(args, "bytesBase64")?,
+        },
+        "continue" | "run" => VmCommand::Run,
+        "pause" => VmCommand::Pause,
+        "next" | "step" => {
+            let count = parse_u64_value(args, "count", 1)?;
+            if count <= 1 {
+                VmCommand::Step
+            } else {
+                VmCommand::StepCount { count }
+            }
+        }
+        "stepOver" | "step_over" => VmCommand::StepOver,
+        "stepOut" | "step_out" => VmCommand::StepOut,
+        "restart" | "reset" => VmCommand::Reset {
+            policy: parse_reset_policy(args)?,
+        },
+        "readMemory" | "read" => VmCommand::Read {
+            addr: parse_u32_value(args, "addr", 0)?,
+            len: parse_u32_value(args, "len", 64)?,
+        },
+        "writeMemory" | "write" => VmCommand::Write {
+            addr: parse_u32_value(args, "addr", 0)?,
+            bytes: parse_write_bytes(args)?,
+        },
+        "state" | "registers" => VmCommand::State,
+        "dump" => VmCommand::Dump,
+        "restore" => VmCommand::Restore {
+            dump: parse_dump_value(args)?,
+        },
+        "disconnect" | "shutdown" => VmCommand::Shutdown,
+        other => return Err(anyhow!("unsupported control command: {other}")),
+    };
+    Ok(cmd)
+}
+
+fn to_control_response(request_id: u64, command: String, reply: VmReply) -> ControlResponse {
+    match reply {
+        VmReply::Error { message } => ControlResponse {
+            id: request_id,
+            seq: request_id,
+            success: false,
+            command,
+            message: Some(message),
+            body: Value::Null,
+        },
+        other => ControlResponse {
+            id: request_id,
+            seq: request_id,
+            success: true,
+            command,
+            message: None,
+            body: serde_json::to_value(other).unwrap_or(Value::Null),
+        },
+    }
 }
 
 fn process_control_request(parsed: ControlRequest, tx: &Sender<Envelope>) -> ControlResponse {
@@ -838,60 +556,6 @@ fn process_control_request(parsed: ControlRequest, tx: &Sender<Envelope>) -> Con
     to_control_response(request_id, parsed.command, reply)
 }
 
-fn builtin_examples() -> Vec<ExampleEntry> {
-    let mut examples = crate::bundled_examples::EXAMPLES
-        .iter()
-        .map(|example| ExampleEntry {
-            name: example.name.to_string(),
-            path: example.name.to_string(),
-        })
-        .collect::<Vec<_>>();
-    examples.sort_by(|a, b| a.name.cmp(&b.name));
-    examples
-}
-
-fn builtin_example_by_name(name: &str) -> Option<&'static [u8]> {
-    crate::bundled_examples::EXAMPLES
-        .iter()
-        .find(|example| example.name == name)
-        .map(|example| example.bytes)
-}
-
-fn resolve_program_source(path: PathBuf) -> anyhow::Result<LoadedProgramSource> {
-    if path.exists() {
-        let display_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("program")
-            .to_string();
-        return Ok(LoadedProgramSource::File { path, display_name });
-    }
-
-    let candidate = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-
-    if let Some(bytes) = builtin_example_by_name(candidate) {
-        return Ok(LoadedProgramSource::Builtin {
-            name: candidate.to_string(),
-            bytes,
-        });
-    }
-
-    if let Some(bytes) = builtin_example_by_name(path.to_string_lossy().as_ref()) {
-        return Ok(LoadedProgramSource::Builtin {
-            name: path.to_string_lossy().to_string(),
-            bytes,
-        });
-    }
-
-    Err(anyhow!(
-        "Unknown example or missing file: {}",
-        path.display()
-    ))
-}
-
 fn content_type_header(value: &str) -> Option<Header> {
     Header::from_bytes(&b"Content-Type"[..], value.as_bytes()).ok()
 }
@@ -927,56 +591,6 @@ fn handle_examples_request(request: Request) {
         200,
         &serde_json::json!({ "examples": builtin_examples() }),
     );
-}
-
-fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
-    let args = req.arguments.as_ref();
-    let cmd = match req.command.as_str() {
-        "initialize" => VmCommand::Initialize,
-        "examples" => VmCommand::Examples,
-        "launch" | "load" => VmCommand::Launch {
-            path: parse_string_value(args, "path")?,
-        },
-        "launchBytes" | "upload" => VmCommand::LaunchBytes {
-            name: parse_string_value(args, "name")?,
-            bytes: parse_base64_bytes(args, "bytesBase64")?,
-        },
-        "continue" => VmCommand::Continue,
-        "pause" => VmCommand::Pause,
-        "next" | "step" => VmCommand::Next {
-            count: parse_u64_value(args, "count", 1)?,
-        },
-        "restart" | "reset" => VmCommand::Restart,
-        "readMemory" => VmCommand::ReadMemory {
-            addr: parse_u32_value(args, "addr", 0)?,
-            len: parse_u32_value(args, "len", 64)?,
-        },
-        "state" | "registers" => VmCommand::State,
-        "disconnect" | "shutdown" => VmCommand::Shutdown,
-        other => return Err(anyhow!("unsupported control command: {other}")),
-    };
-    Ok(cmd)
-}
-
-fn to_control_response(request_id: u64, command: String, reply: VmReply) -> ControlResponse {
-    match reply {
-        VmReply::Error { message } => ControlResponse {
-            id: request_id,
-            seq: request_id,
-            success: false,
-            command,
-            message: Some(message),
-            body: Value::Null,
-        },
-        other => ControlResponse {
-            id: request_id,
-            seq: request_id,
-            success: true,
-            command,
-            message: None,
-            body: serde_json::to_value(other).unwrap_or(Value::Null),
-        },
-    }
 }
 
 fn handle_control_request(mut request: Request, tx: &Sender<Envelope>) {
@@ -1084,28 +698,13 @@ fn run_ws_server(bind_addr: String, tx: Sender<Envelope>) -> anyhow::Result<()> 
 
 pub fn serve(
     initial_path: Option<PathBuf>,
-    cache_line_size: u32,
-    l1_size: u32,
-    l2_size: u32,
-    l3_size: u32,
-    max_instructions: Option<u64>,
+    options: VmRuntimeOptions,
     config: SimConfig,
     port: u16,
 ) -> anyhow::Result<()> {
     let (tx, rx) = channel::<Envelope>();
 
-    let worker = thread::spawn(move || {
-        worker_loop(
-            rx,
-            initial_path,
-            cache_line_size,
-            l1_size,
-            l2_size,
-            l3_size,
-            max_instructions,
-            config,
-        )
-    });
+    let worker = thread::spawn(move || worker_loop(rx, initial_path, options, config));
 
     let bind_addr = format!("127.0.0.1:{port}");
     let ws_port = port.saturating_add(1);
