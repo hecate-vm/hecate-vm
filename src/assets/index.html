@@ -322,6 +322,7 @@
         let currentSnapshot = null;
         let availableExamples = [];
         let lastExamplesSignature = null;
+        let lastRemoteUrl = null;
 
         function formatHex32(value) {
             return `0x${(Number(value || 0) >>> 0).toString(16).padStart(8, '0')}`;
@@ -436,6 +437,34 @@
             return new Promise((resolve) => setTimeout(resolve, ms));
         }
 
+        function connectionControls() {
+            return {
+                input: document.getElementById('ws-url'),
+                button: document.getElementById('btn-connect'),
+            };
+        }
+
+        function updateConnectionControls() {
+            const { input, button } = connectionControls();
+            const remoteConnected = !!(adapter && adapter.kind === 'remote');
+            input.disabled = remoteConnected;
+            button.textContent = remoteConnected ? 'Disconnect' : 'Connect';
+        }
+
+        function clearSnapshotView() {
+            currentSnapshot = null;
+            updateStatusPill(false);
+            document.getElementById('pc').textContent = '';
+            document.getElementById('entry').textContent = '';
+            document.getElementById('loaded').textContent = '(none)';
+            document.getElementById('stop').textContent = '';
+            document.getElementById('instr').textContent = '';
+            document.getElementById('cycles').textContent = '';
+            document.getElementById('instret').textContent = '';
+            document.getElementById('syscalls').textContent = '';
+            document.getElementById('regs').textContent = '';
+        }
+
         function isPagesSite() {
             return window.location.hostname === 'hecate-vm.github.io' || window.location.hostname.endsWith('.github.io');
         }
@@ -495,6 +524,7 @@
                     return await control(commandName, args);
                 },
                 async listExamples() {
+                    const wasm = await ensureRuntime();
                     let body = await wasm.listExamples();
                     if (typeof body === 'string') {
                         body = JSON.parse(body);
@@ -525,8 +555,10 @@
         function makeRemoteAdapter(wsUrl) {
             let ws = null;
             const pending = new Map();
+            let disconnectRequested = false;
 
             async function connect() {
+                disconnectRequested = false;
                 return await new Promise((resolve, reject) => {
                     const socket = new WebSocket(wsUrl);
                     const timeout = setTimeout(() => {
@@ -564,6 +596,10 @@
                                 entry.reject(new Error('websocket disconnected'));
                             }
                             pending.clear();
+
+                            if (!disconnectRequested) {
+                                handleRemoteDisconnect(`Disconnected from ${wsUrl}`);
+                            }
                         };
 
                         resolve();
@@ -593,6 +629,7 @@
                 kind: 'remote',
                 connect,
                 disconnect() {
+                    disconnectRequested = true;
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         ws.close();
                     }
@@ -614,11 +651,49 @@
             };
         }
 
+        async function clearActiveAdapter(message) {
+            if (adapter && typeof adapter.disconnect === 'function') {
+                adapter.disconnect();
+            }
+            adapter = null;
+            availableExamples = [];
+            lastExamplesSignature = null;
+            if (timer) {
+                clearInterval(timer);
+                timer = null;
+            }
+            clearSnapshotView();
+            renderExamples();
+            updateConnectionControls();
+            if (message) {
+                showMsg(message);
+            }
+        }
+
+        async function tryFallbackToWasm(message) {
+            try {
+                await fallbackToWasm(message);
+                return true;
+            } catch (error) {
+                return false;
+            }
+        }
+
+        async function handleRemoteDisconnect(message) {
+            const switched = await tryFallbackToWasm(`${message}; using WASM instead`);
+            if (!switched) {
+                await clearActiveAdapter(message);
+            }
+        }
+
         async function setActiveAdapter(nextAdapter, message) {
             if (adapter && typeof adapter.disconnect === 'function') {
                 adapter.disconnect();
             }
             adapter = nextAdapter;
+            if (adapter.kind === 'remote') {
+                lastRemoteUrl = document.getElementById('ws-url').value.trim() || lastRemoteUrl;
+            }
             await adapter.connect();
             restartTimer();
             availableExamples = await adapter.listExamples().catch(() => []);
@@ -626,6 +701,7 @@
                 availableExamples = await loadStaticExamples().catch(() => []);
             }
             renderExamples();
+            updateConnectionControls();
             if (message) {
                 showMsg(message);
             }
@@ -819,12 +895,18 @@
         }
 
         document.getElementById('btn-connect').addEventListener('click', async () => {
+            if (adapter && adapter.kind === 'remote') {
+                await handleRemoteDisconnect(`Disconnected from ${lastRemoteUrl || 'websocket backend'}`);
+                return;
+            }
+
             const wsUrl = document.getElementById('ws-url').value.trim();
             if (!wsUrl) {
                 showMsg('Please enter a websocket URL', true);
                 return;
             }
             try {
+                lastRemoteUrl = wsUrl;
                 await connectToRemote(wsUrl);
             } catch (error) {
                 showMsg(error.message || String(error), true);
@@ -949,6 +1031,7 @@
         async function boot() {
             const wsUrl = 'ws://127.0.0.1:8582'; // defaultWsUrl();
             document.getElementById('ws-url').value = wsUrl;
+            updateConnectionControls();
             showMsg('UI ready. Connecting to the local VM...');
 
             await wait(0);
