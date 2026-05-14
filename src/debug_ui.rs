@@ -724,8 +724,8 @@ pub fn serve(
                 respond_text(request, 200, WASM_SHIM_JS, "text/javascript; charset=utf-8")
             }
             #[cfg(feature = "http_control_api")]
-            (method, endpoint) if let Some(command) = endpoint.strip_prefix("/api/v1/") => {
-                match (method, command) {
+            (method, endpoint) if endpoint.starts_with("/api/v1/") => {
+                match (method, endpoint.strip_prefix("/api/v1/").unwrap()) {
                     (Method::Get, "examples") => handle_examples_request(request),
                     (Method::Post, "control") => handle_control_request(request, &tx),
                     _ => respond_json(

@@ -51,7 +51,7 @@ fn default_vm() -> Result<HecateVm, JsValue> {
             max_instructions: None,
         },
         config,
-        IoMode::Stdout,
+        IoMode::Buffer,
     ))
 }
 
