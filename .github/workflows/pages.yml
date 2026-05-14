@@ -48,7 +48,7 @@ jobs:
 
       - name: Build wasm package
         run: |
-          wasm-pack build --target web --out-dir "${WASM_PKG_DIR}" --out-name hecate_vm_wasm
+          wasm-pack build --release --target web --out-dir "${WASM_PKG_DIR}" --out-name hecate_vm_wasm
 
       - name: Verify wasm web entrypoint exists
         run: |
