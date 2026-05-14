@@ -47,7 +47,7 @@ pkgs.mkShell {
       rustup target add riscv32im-unknown-none-elf
     fi
 
-    echo "Hecate dev shell ready. Use: ./scripts/build_samples.sh or ./scripts/run_rust_sample.sh"
+    echo "Hecate dev shell ready!"
     exec fish -i
   '';
 }
