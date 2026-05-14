@@ -475,7 +475,10 @@
                     };
                 }
 
-                const response = await wasm.control({ id: seq++, command: commandName, arguments: args });
+                let response = await wasm.control({ id: seq++, command: commandName, arguments: args });
+                if (typeof response === 'string') {
+                    response = JSON.parse(response);
+                }
                 if (!response.success) {
                     throw new Error(response.message || 'request failed');
                 }
@@ -492,7 +495,10 @@
                     return await control(commandName, args);
                 },
                 async listExamples() {
-                    const body = await control('examples');
+                    let body = await wasm.listExamples();
+                    if (typeof body === 'string') {
+                        body = JSON.parse(body);
+                    }
                     return body.examples || [];
                 },
             };

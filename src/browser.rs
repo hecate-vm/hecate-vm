@@ -443,13 +443,15 @@ impl HecateVmWasm {
         let parsed: ControlRequest = serde_wasm_bindgen::from_value(request)
             .map_err(|e| JsValue::from_str(&format!("invalid control request: {e}")))?;
         let reply = self.execute(parsed)?;
-        serde_wasm_bindgen::to_value(&reply)
-            .map_err(|e| JsValue::from_str(&format!("serialization failed: {e}")))
+        let payload = serde_json::to_string(&reply)
+            .map_err(|e| JsValue::from_str(&format!("serialization failed: {e}")))?;
+        Ok(JsValue::from_str(&payload))
     }
 
     #[wasm_bindgen(js_name = listExamples)]
     pub fn list_examples(&mut self) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&serde_json::json!({ "examples": builtin_examples() }))
-            .map_err(|e| JsValue::from_str(&format!("serialization failed: {e}")))
+        let payload = serde_json::to_string(&serde_json::json!({ "examples": builtin_examples() }))
+            .map_err(|e| JsValue::from_str(&format!("serialization failed: {e}")))?;
+        Ok(JsValue::from_str(&payload))
     }
 }
