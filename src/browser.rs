@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -205,20 +203,14 @@ fn parse_dump_value(v: Option<&Value>) -> Result<VmDump, JsValue> {
 fn builtin_examples() -> Vec<Value> {
     bundled_examples::EXAMPLES
         .iter()
-        .map(|example| serde_json::json!({ "name": example.name, "path": example.name }))
+        .map(|example| serde_json::json!({ "name": example.name }))
         .collect()
 }
 
-fn builtin_example_bytes(path: &str) -> Option<(&'static str, &'static [u8])> {
-    let candidate = PathBuf::from(path);
-    let filename = candidate
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(path);
-
+fn builtin_example_bytes(name: &str) -> Option<(&'static str, &'static [u8])> {
     bundled_examples::EXAMPLES
         .iter()
-        .find(|example| example.name == path || example.name == filename)
+        .find(|example| example.name == name)
         .map(|example| (example.name, example.bytes))
 }
 
@@ -267,31 +259,13 @@ impl HecateVmWasm {
                 command,
                 serde_json::json!({ "examples": builtin_examples() }),
             ),
-            "launch" | "load" => {
-                let path = parse_string_value(args, "path")?;
-                let (name, bytes) = builtin_example_bytes(&path).ok_or_else(|| {
-                    JsValue::from_str(&format!("Unknown example or missing file: {path}"))
-                })?;
+            "load" => {
+                let name = parse_string_value(args, "name")?;
+                let (name, bytes) = builtin_example_bytes(&name)
+                    .ok_or_else(|| JsValue::from_str(&format!("Unknown example: {name}")))?;
                 let state = self
                     .vm
                     .load(name, bytes)
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                response(
-                    id,
-                    command,
-                    serde_json::json!({
-                        "entry": state.entry_point,
-                        "entryHex": format!("0x{:08x}", state.entry_point),
-                        "state": to_json_value(&state)?
-                    }),
-                )
-            }
-            "launchBytes" | "upload" => {
-                let name = parse_string_value(args, "name")?;
-                let bytes = parse_base64_bytes(args, "bytesBase64")?;
-                let state = self
-                    .vm
-                    .load(name, &bytes)
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
                 response(
                     id,

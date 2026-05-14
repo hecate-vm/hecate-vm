@@ -1440,7 +1440,7 @@ fn decode_instruction(memory: &HecateMemory, pc: u32) -> DecodedInstruction {
     let (Some(b0), Some(b1)) = (b0, b1) else {
         return DecodedInstruction {
             snapshot: InstructionSnapshot {
-                text: "Unavailable (memory unmapped at PC)".to_string(),
+                text: "N/A (memory unmapped at PC)".to_string(),
                 hex: None,
                 size: None,
                 bytes: None,
@@ -1486,7 +1486,7 @@ fn decode_instruction(memory: &HecateMemory, pc: u32) -> DecodedInstruction {
         let bytes = format!("{:02x} {:02x}", b0, b1);
         return DecodedInstruction {
             snapshot: InstructionSnapshot {
-                text: "Unavailable (incomplete 32-bit instruction at PC)".to_string(),
+                text: "N/A (incomplete 32-bit instruction at PC)".to_string(),
                 hex: None,
                 size: None,
                 bytes: Some(bytes),

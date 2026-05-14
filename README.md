@@ -96,7 +96,6 @@ Example binaries are feature-gated at build time. Enable one or more of these Ca
 When enabled, the matching example is built during compilation and embedded with `include_bytes!`.
 Only enabled examples are exposed by the local debug UI, and they are shown by filename only.
 
-The control API is exposed via `POST /api/v1/control`.
 The websocket transport accepts the same command envelope as JSON text messages.
 
 Example request:
@@ -112,7 +111,7 @@ Example request:
 }
 ```
 
-Supported commands include: `initialize`, `launch`, `continue`, `pause`, `next`, `restart`, `readMemory`, `state`, `disconnect`.
+Supported commands include: `initialize`, `load`, `continue`, `pause`, `next`, `restart`, `readMemory`, `state`, `disconnect`.
 
 The `state` response includes instruction metadata at `state.current_instruction`,
 `state.current_instruction_hex`, `state.current_instruction_size`, and

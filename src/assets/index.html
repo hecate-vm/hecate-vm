@@ -212,6 +212,7 @@
                 <button id="btn-pause">Pause</button>
                 <button id="btn-step">Step</button>
                 <button id="btn-reset">Reset</button>
+                <button id="btn-unload">Unload</button>
             </div>
 
             <div class="row">
@@ -330,6 +331,10 @@
         }
 
         function showMsg(text, isError = false) {
+            if (isError) {
+                console.error(text);
+                text = text.message || String(text);
+            }
             const el = document.getElementById('msg');
             el.textContent = text;
             el.style.color = isError ? '#a1260d' : '#2f6b4f';
@@ -352,9 +357,9 @@
 
         function renderInstructionWithLink(rawInstruction) {
             const container = document.getElementById('instr');
-            const text = String(rawInstruction || 'Unavailable').trim();
+            const text = String(rawInstruction || 'N/A').trim();
 
-            if (text === 'Unavailable') {
+            if (text.toUpperCase().includes('N/A')) {
                 container.textContent = text;
                 return;
             }
@@ -467,12 +472,6 @@
 
             async function control(commandName, args = {}) {
                 const wasm = await ensureRuntime();
-                if (commandName === 'launchBytes') {
-                    args = {
-                        name: args.name,
-                        bytesBase64: bytesToBase64(args.bytes),
-                    };
-                }
 
                 let response = await wasm.control({ id: seq++, command: commandName, arguments: args });
                 if (typeof response === 'string') {
@@ -502,24 +501,6 @@
                     return body.examples || [];
                 },
             };
-        }
-
-        async function loadStaticExamples() {
-            const manifestUrl = new URL('examples/manifest.json', window.location.href).href;
-            const response = await fetch(manifestUrl, { cache: 'no-store' });
-            if (!response.ok) {
-                return [];
-            }
-
-            const manifest = await response.json();
-            const items = Array.isArray(manifest.examples) ? manifest.examples : [];
-            return items
-                .filter((entry) => entry && typeof entry.name === 'string' && typeof entry.path === 'string')
-                .map((entry) => ({
-                    name: entry.name,
-                    path: entry.path,
-                    staticUrl: new URL(entry.path, window.location.href).href,
-                }));
         }
 
         function makeRemoteAdapter(wsUrl) {
@@ -606,12 +587,6 @@
                     ws = null;
                 },
                 async command(commandName, args = {}) {
-                    if (commandName === 'launchBytes') {
-                        return await command(commandName, {
-                            name: args.name,
-                            bytesBase64: bytesToBase64(args.bytes),
-                        });
-                    }
                     return await command(commandName, args);
                 },
                 async listExamples() {
@@ -663,9 +638,6 @@
             await adapter.connect();
             restartTimer();
             availableExamples = await adapter.listExamples().catch(() => []);
-            if (adapter.kind === 'wasm' && availableExamples.length === 0) {
-                availableExamples = await loadStaticExamples().catch(() => []);
-            }
             renderExamples();
             if (message) {
                 showMsg(message);
@@ -738,7 +710,7 @@
 
         function currentLoadedExampleName() {
             const loaded = (currentSnapshot && currentSnapshot.loadedBinaryName) || '';
-            const match = availableExamples.find((example) => example.name === loaded || example.path === loaded);
+            const match = availableExamples.find((example) => example.name === loaded);
             return match ? match.name : '';
         }
 
@@ -767,7 +739,7 @@
             const options = ['<option value="">-</option>'];
             for (const item of availableExamples) {
                 const selected = item.name === selectedExample ? ' selected' : '';
-                options.push(`<option value="${item.path}"${selected}>${item.name}</option>`);
+                options.push(`<option value="${item.name}"${selected}>${item.name}</option>`);
             }
             select.innerHTML = options.join('');
             if (!selectedExample) {
@@ -805,14 +777,14 @@
                 document.getElementById('entry').textContent = formatHex32(state.entryPoint);
                 document.getElementById('loaded').textContent = state.loadedBinaryName || '(none)';
                 document.getElementById('stop').textContent = formatStopReason(state.stopReason);
-                renderInstructionWithLink((state.currentInstruction && state.currentInstruction.text) || 'Unavailable');
+                renderInstructionWithLink(state.currentInstruction && state.currentInstruction.text);
                 document.getElementById('cycles').textContent = String(state.stats.cycles);
                 document.getElementById('instret').textContent = String(state.stats.instret);
                 document.getElementById('syscalls').textContent = String(state.stats.syscall_count);
                 document.getElementById('regs').textContent = renderRegs(state.registers, state.pc);
                 renderExamples();
             } catch (error) {
-                showMsg(error.message || String(error), true);
+                showMsg(error, true);
             }
         }
 
@@ -824,36 +796,19 @@
             timer = setInterval(refresh, ms);
         }
 
-        async function loadExample(path) {
-            const body = await control('launch', { path });
-            showMsg(`Loaded example: ${path}`);
+        async function loadExample(name) {
+            const body = await control('load', { name });
+            showMsg(`Loaded example: ${name}`);
             const entryHex = extractEntryHex(body);
             if (entryHex) {
-                showMsg(`Loaded example: ${path} @ ${entryHex}`);
+                showMsg(`Loaded example: ${name} @ ${entryHex}`);
             }
-            await refresh();
-        }
-
-        async function loadStaticExample(example) {
-            if (!example || !example.staticUrl) {
-                throw new Error('invalid static example entry');
-            }
-
-            const response = await fetch(example.staticUrl, { cache: 'no-store' });
-            if (!response.ok) {
-                throw new Error(`failed to fetch example ${example.name}: HTTP ${response.status}`);
-            }
-
-            const bytes = new Uint8Array(await response.arrayBuffer());
-            const body = await control('launchBytes', { name: example.name, bytes });
-            const entryHex = extractEntryHex(body);
-            showMsg(`Loaded example: ${example.name}${entryHex ? ` @ ${entryHex}` : ''}`);
             await refresh();
         }
 
         async function loadUploadedFile(file) {
             const bytes = new Uint8Array(await file.arrayBuffer());
-            const body = await control('launchBytes', { name: file.name, bytes });
+            const body = await control('load', { name: file.name, bytesBase64: bytesToBase64(bytes) });
             const entryHex = extractEntryHex(body);
             showMsg(`Loaded binary: ${file.name}${entryHex ? ` @ ${entryHex}` : ''}`);
             await refresh();
@@ -865,21 +820,15 @@
                 return;
             }
 
-            const selectedEntry = availableExamples.find((example) => example.path === selected || example.name === selected);
-
             if (!(await confirmBeforeReplacingBinary())) {
                 renderExamples();
                 return;
             }
 
             try {
-                if (selectedEntry && selectedEntry.staticUrl) {
-                    await loadStaticExample(selectedEntry);
-                } else {
-                    await loadExample(selected);
-                }
+                await loadExample(selected);
             } catch (error) {
-                showMsg(error.message || String(error), true);
+                showMsg(error, true);
                 renderExamples();
             }
         });
@@ -904,7 +853,7 @@
             try {
                 await loadUploadedFile(file);
             } catch (error) {
-                showMsg(error.message || String(error), true);
+                showMsg(error, true);
             } finally {
                 event.target.value = '';
             }
@@ -912,11 +861,11 @@
 
         document.getElementById('btn-run').addEventListener('click', async () => {
             try {
-                await control('continue');
+                await control('run');
                 showMsg('Running');
                 await refresh();
             } catch (error) {
-                showMsg(error.message || String(error), true);
+                showMsg(error, true);
             }
         });
 
@@ -926,27 +875,37 @@
                 showMsg('Paused');
                 await refresh();
             } catch (error) {
-                showMsg(error.message || String(error), true);
+                showMsg(error, true);
             }
         });
 
         document.getElementById('btn-step').addEventListener('click', async () => {
             try {
                 const count = Math.max(1, parseMaybeHex(document.getElementById('step-count').value) || 1);
-                await control('next', { count });
+                await control('step', { count });
                 await refresh();
             } catch (error) {
-                showMsg(error.message || String(error), true);
+                showMsg(error, true);
             }
         });
 
         document.getElementById('btn-reset').addEventListener('click', async () => {
             try {
-                await control('restart');
+                await control('reset');
                 showMsg('Reset complete');
                 await refresh();
             } catch (error) {
-                showMsg(error.message || String(error), true);
+                showMsg(error, true);
+            }
+        });
+
+        document.getElementById('btn-unload').addEventListener('click', async () => {
+            try {
+                await control('unload');
+                showMsg('Unload complete');
+                await refresh();
+            } catch (error) {
+                showMsg(error, true);
             }
         });
 
@@ -954,7 +913,7 @@
             const addr = parseMaybeHex(document.getElementById('mem-addr').value);
             const len = parseMaybeHex(document.getElementById('mem-len').value);
             try {
-                const body = await control('readMemory', { addr, len });
+                const body = await control('read', { addr, len });
                 const result = body.result || {};
                 const bytes = result.bytes || [];
                 const lines = [];
@@ -968,7 +927,7 @@
                     showMsg(`Partial memory read: requested ${result.requested_len} bytes, received ${result.available_len}`);
                 }
             } catch (error) {
-                showMsg(error.message || String(error), true);
+                showMsg(error, true);
             }
         });
 
@@ -987,7 +946,7 @@
         }
 
         boot().catch((error) => {
-            showMsg(error.message || String(error), true);
+            showMsg(error, true);
         });
     </script>
 </body>

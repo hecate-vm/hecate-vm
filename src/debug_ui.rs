@@ -47,15 +47,15 @@ struct ControlResponse {
 #[derive(Debug, Serialize, Clone)]
 struct ExampleEntry {
     name: String,
-    path: String,
 }
 
 #[derive(Debug)]
 enum VmCommand {
     Initialize,
+    Unload,
     Examples,
     LoadBlob { name: String, bytes: Vec<u8> },
-    LoadPath { path: String },
+    LoadExample { name: String },
     Run,
     Pause,
     Step,
@@ -107,7 +107,6 @@ fn builtin_examples() -> Vec<ExampleEntry> {
         .iter()
         .map(|example| ExampleEntry {
             name: example.name.to_string(),
-            path: example.name.to_string(),
         })
         .collect::<Vec<_>>();
     examples.sort_by(|a, b| a.name.cmp(&b.name));
@@ -250,18 +249,11 @@ fn parse_dump_value(v: Option<&Value>) -> anyhow::Result<VmDump> {
     serde_json::from_value(raw.clone()).map_err(|e| anyhow!("invalid dump payload: {e}"))
 }
 
-fn load_path_or_builtin(vm: &mut HecateVm, path: String) -> anyhow::Result<Value> {
-    let candidate = PathBuf::from(&path);
-    let state = if candidate.exists() {
-        vm.load_file(&candidate)?
-    } else if let Some(bytes) = builtin_example_by_name(&path) {
-        vm.load(path, bytes)?
-    } else {
-        return Err(anyhow!(
-            "Unknown example or missing file: {}",
-            candidate.display()
-        ));
+fn load_builtin_example(vm: &mut HecateVm, name: String) -> anyhow::Result<Value> {
+    let Some(bytes) = builtin_example_by_name(&name) else {
+        return Err(anyhow!("Unknown example: {name}"));
     };
+    let state = vm.load(name, bytes)?;
     serde_json::to_value(state).map_err(|e| anyhow!("failed to serialize VM state: {e}"))
 }
 
@@ -318,6 +310,10 @@ fn worker_loop(
 fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
     let reply = match env.cmd {
         VmCommand::Initialize => VmReply::Ack,
+        VmCommand::Unload => {
+            *vm = HecateVm::new(vm.options().clone(), vm.config().clone());
+            VmReply::Ack
+        }
         VmCommand::Examples => VmReply::Examples {
             examples: builtin_examples(),
         },
@@ -332,7 +328,7 @@ fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
                 message: e.to_string(),
             },
         },
-        VmCommand::LoadPath { path } => match load_path_or_builtin(vm, path) {
+        VmCommand::LoadExample { name } => match load_builtin_example(vm, name) {
             Ok(state) => VmReply::Loaded {
                 entry: vm.entry_point(),
                 entry_hex: format!("0x{:08x}", vm.entry_point()),
@@ -440,6 +436,7 @@ fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
     let args = req.arguments.as_ref();
     let cmd = match req.command.as_str() {
         "initialize" => VmCommand::Initialize,
+        "unload" => VmCommand::Unload,
         "examples" => VmCommand::Examples,
         "load" => {
             if args.and_then(|value| value.get("bytesBase64")).is_some() {
@@ -448,21 +445,14 @@ fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
                     bytes: parse_base64_bytes(args, "bytesBase64")?,
                 }
             } else {
-                VmCommand::LoadPath {
-                    path: parse_string_value(args, "path")?,
+                VmCommand::LoadExample {
+                    name: parse_string_value(args, "name")?,
                 }
             }
         }
-        "launch" | "loadFile" => VmCommand::LoadPath {
-            path: parse_string_value(args, "path")?,
-        },
-        "launchBytes" | "upload" => VmCommand::LoadBlob {
-            name: parse_string_value(args, "name")?,
-            bytes: parse_base64_bytes(args, "bytesBase64")?,
-        },
-        "continue" | "run" => VmCommand::Run,
+        "run" => VmCommand::Run,
         "pause" => VmCommand::Pause,
-        "next" | "step" => {
+        "step" => {
             let count = parse_u64_value(args, "count", 1)?;
             if count <= 1 {
                 VmCommand::Step
@@ -470,25 +460,25 @@ fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
                 VmCommand::StepCount { count }
             }
         }
-        "stepOver" | "step_over" => VmCommand::StepOver,
-        "stepOut" | "step_out" => VmCommand::StepOut,
-        "restart" | "reset" => VmCommand::Reset {
+        "step_over" => VmCommand::StepOver,
+        "step_out" => VmCommand::StepOut,
+        "reset" => VmCommand::Reset {
             policy: parse_reset_policy(args)?,
         },
-        "readMemory" | "read" => VmCommand::Read {
+        "read" => VmCommand::Read {
             addr: parse_u32_value(args, "addr", 0)?,
             len: parse_u32_value(args, "len", 64)?,
         },
-        "writeMemory" | "write" => VmCommand::Write {
+        "write" => VmCommand::Write {
             addr: parse_u32_value(args, "addr", 0)?,
             bytes: parse_write_bytes(args)?,
         },
-        "state" | "registers" => VmCommand::State,
+        "state" => VmCommand::State,
         "dump" => VmCommand::Dump,
         "restore" => VmCommand::Restore {
             dump: parse_dump_value(args)?,
         },
-        "disconnect" | "shutdown" => VmCommand::Shutdown,
+        "shutdown" => VmCommand::Shutdown,
         other => return Err(anyhow!("unsupported control command: {other}")),
     };
     Ok(cmd)
@@ -593,6 +583,7 @@ fn handle_examples_request(request: Request) {
     );
 }
 
+#[cfg(feature = "http_control_api")]
 fn handle_control_request(mut request: Request, tx: &Sender<Envelope>) {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
@@ -675,7 +666,6 @@ fn handle_ws_client(stream: TcpStream, tx: Sender<Envelope>) -> anyhow::Result<(
 fn run_ws_server(bind_addr: String, tx: Sender<Envelope>) -> anyhow::Result<()> {
     let listener = TcpListener::bind(&bind_addr)
         .map_err(|e| anyhow!("Failed to bind websocket server at {bind_addr}: {e}"))?;
-    println!("Control websocket listening on ws://{bind_addr}");
 
     for stream in listener.incoming() {
         match stream {
@@ -720,9 +710,8 @@ pub fn serve(
         }
     });
 
-    println!("Debug UI listening on http://{bind_addr}");
-    println!("Use /api/v1/control for control messages.");
-    println!("Use ws://127.0.0.1:{ws_port} for websocket control.");
+    println!("Remote Control: ws://127.0.0.1:{ws_port} for websocket control.");
+    println!("Debug Console : http://{bind_addr}");
 
     for request in server.incoming_requests() {
         let method = request.method().clone();
@@ -734,6 +723,7 @@ pub fn serve(
             (Method::Get, "/assets/wasm/hecate_vm_wasm.js") => {
                 respond_text(request, 200, WASM_SHIM_JS, "text/javascript; charset=utf-8")
             }
+            #[cfg(feature = "http_control_api")]
             (Method::Post, "/api/v1/control") => handle_control_request(request, &tx),
             _ => respond_json(
                 request,
