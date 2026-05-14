@@ -102,7 +102,7 @@ Example request:
 ```json
 {
   "id": 1,
-  "command": "readMemory",
+  "command": "read",
   "arguments": {
     "addr": "0x1000",
     "len": 64
@@ -110,7 +110,7 @@ Example request:
 }
 ```
 
-Supported commands include: `initialize`, `load`, `continue`, `pause`, `next`, `restart`, `readMemory`, `state`, `disconnect`.
+Supported commands include: `initialize`, `load`, `continue`, `pause`, `step`, `reset`, `read`, `state`, `shutdown`.
 
 The `state` response includes instruction metadata at `state.current_instruction`,
 `state.current_instruction_hex`, `state.current_instruction_size`, and

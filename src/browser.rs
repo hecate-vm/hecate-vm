@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::bundled_examples;
 use crate::vm::{
-    HecateVm, MemoryReadResult, ResetMemoryPolicy, SimConfigRaw, VmDump, VmRuntimeOptions,
+    HecateVm, IoMode, MemoryReadResult, ResetMemoryPolicy, SimConfigRaw, VmDump, VmRuntimeOptions,
 };
 
 const DEFAULT_CONFIG: &str = include_str!("default.toml");
@@ -51,6 +51,7 @@ fn default_vm() -> Result<HecateVm, JsValue> {
             max_instructions: None,
         },
         config,
+        IoMode::Stdout,
     ))
 }
 
@@ -277,7 +278,7 @@ impl HecateVmWasm {
                     }),
                 )
             }
-            "continue" | "run" => {
+            "run" => {
                 self.vm
                     .run()
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -297,7 +298,7 @@ impl HecateVmWasm {
                 command,
                 serde_json::json!({ "state": to_json_value(&self.vm.pause())? }),
             ),
-            "next" | "step" => {
+            "step" => {
                 let count = parse_u64_value(args, "count", 1)?;
                 let state = if count <= 1 {
                     self.vm.step()
@@ -311,7 +312,7 @@ impl HecateVmWasm {
                     serde_json::json!({ "state": to_json_value(&state)? }),
                 )
             }
-            "stepOver" | "step_over" => response(
+            "step_over" => response(
                 id,
                 command,
                 serde_json::json!({
@@ -323,7 +324,7 @@ impl HecateVmWasm {
                     )?
                 }),
             ),
-            "stepOut" | "step_out" => response(
+            "step_out" => response(
                 id,
                 command,
                 serde_json::json!({
@@ -335,7 +336,7 @@ impl HecateVmWasm {
                     )?
                 }),
             ),
-            "restart" | "reset" => {
+            "reset" => {
                 let state = self
                     .vm
                     .reset(parse_reset_policy(args)?)
@@ -346,7 +347,7 @@ impl HecateVmWasm {
                     serde_json::json!({ "state": to_json_value(&state)? }),
                 )
             }
-            "readMemory" | "read" => {
+            "read" => {
                 let addr = parse_u32_value(args, "addr", 0)?;
                 let len = parse_u32_value(args, "len", 64)?;
                 let result: MemoryReadResult = self
@@ -355,7 +356,7 @@ impl HecateVmWasm {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
                 response(id, command, serde_json::json!({ "result": result }))
             }
-            "writeMemory" | "write" => {
+            "write" => {
                 let addr = parse_u32_value(args, "addr", 0)?;
                 let bytes = parse_write_bytes(args)?;
                 self.vm
@@ -367,7 +368,7 @@ impl HecateVmWasm {
                     serde_json::json!({ "state": to_json_value(&self.vm.state())? }),
                 )
             }
-            "state" | "registers" => response(
+            "state" => response(
                 id,
                 command,
                 serde_json::json!({ "state": to_json_value(&self.vm.state())? }),
