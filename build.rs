@@ -43,14 +43,21 @@ fn main() {
     println!("cargo:rerun-if-changed=examples");
     println!("cargo:rerun-if-changed=runtime");
 
+    let target = env::var("TARGET").unwrap_or_default();
+    let wasm_target = target.contains("wasm32");
+
     for example in EXAMPLES {
         println!("cargo:rerun-if-env-changed={}", example.feature_env);
     }
 
-    let enabled: Vec<&ExampleSpec> = EXAMPLES
-        .iter()
-        .filter(|example| env::var_os(example.feature_env).is_some())
-        .collect();
+    let enabled: Vec<&ExampleSpec> = if wasm_target {
+        Vec::new()
+    } else {
+        EXAMPLES
+            .iter()
+            .filter(|example| env::var_os(example.feature_env).is_some())
+            .collect()
+    };
 
     if !enabled.is_empty() {
         let selected = enabled

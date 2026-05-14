@@ -436,6 +436,57 @@
             return new Promise((resolve) => setTimeout(resolve, ms));
         }
 
+        function makeWasmAdapter() {
+            let runtime = null;
+
+            async function ensureRuntime() {
+                if (runtime) {
+                    return runtime;
+                }
+
+                const module = await import('./assets/wasm/hecate_vm_wasm.js');
+                if (module.createHecateVm) {
+                    runtime = await module.createHecateVm();
+                } else if (module.HecateVmWasm) {
+                    runtime = new module.HecateVmWasm();
+                } else {
+                    throw new Error('WASM module missing createHecateVm/HecateVmWasm export');
+                }
+                return runtime;
+            }
+
+            async function control(commandName, args = {}) {
+                const wasm = await ensureRuntime();
+                if (commandName === 'launchBytes') {
+                    args = {
+                        name: args.name,
+                        bytesBase64: bytesToBase64(args.bytes),
+                    };
+                }
+
+                const response = await wasm.control({ id: seq++, command: commandName, arguments: args });
+                if (!response.success) {
+                    throw new Error(response.message || 'request failed');
+                }
+                return response.body || {};
+            }
+
+            return {
+                kind: 'wasm',
+                async connect() {
+                    await ensureRuntime();
+                },
+                disconnect() { },
+                async command(commandName, args = {}) {
+                    return await control(commandName, args);
+                },
+                async listExamples() {
+                    const body = await control('examples');
+                    return body.examples || [];
+                },
+            };
+        }
+
         function makeRemoteAdapter(wsUrl) {
             let ws = null;
             const pending = new Map();
@@ -557,6 +608,18 @@
                 }
             }
             throw lastError || new Error(`websocket connection failed: ${wsUrl}`);
+        }
+
+        async function fallbackToWasm(message) {
+            await setActiveAdapter(makeWasmAdapter(), message || 'WASM runtime initialized');
+        }
+
+        async function connectToRemoteOrFallback(wsUrl, fallbackMessage) {
+            try {
+                await connectToRemote(wsUrl);
+            } catch (error) {
+                await fallbackToWasm(fallbackMessage || `Could not connect to ${wsUrl}; using WASM instead`);
+            }
         }
 
         async function control(command, args = {}) {
@@ -790,13 +853,8 @@
             restartTimer();
             showMsg('UI ready. Connecting to the local VM...');
 
-            if (isGitHubPages()) {
-                showMsg('Static hosting without the websocket backend is no longer supported by this page.', true);
-                return;
-            }
-
             await wait(0);
-            await connectToRemote(wsUrl);
+            await connectToRemoteOrFallback(wsUrl);
         }
 
         boot().catch((error) => {
