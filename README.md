@@ -71,13 +71,23 @@ Enable the interactive debugger/UI with `--debug-ui`.
 When enabled:
 
 - The VM starts a local server at `http://127.0.0.1:8581` (or `--debug-port`)
+- A control websocket is exposed on `ws://127.0.0.1:8582` (`debug-port + 1`)
 - You can load binaries dynamically from the UI
 - You can run, pause, step, and reset execution
 - You can inspect registers, PC, and memory while the simulation runs
 - You can inspect the current instruction at the active PC
 - VM control happens through message passing to a dedicated VM worker thread
 
+The browser UI supports two execution modes with the same controls:
+
+- `Connect to local Hecate VM` (websocket/HTTP control API)
+- `Run in browser (WASM)` (loads a browser runtime module)
+
+The UI includes an examples dropdown. In local mode it comes from `GET /api/v1/examples`.
+In browser mode it comes from `GET /assets/examples.json`.
+
 The control API is exposed via `POST /api/v1/control`.
+The websocket transport accepts the same command envelope as JSON text messages.
 
 Example request:
 
@@ -97,6 +107,11 @@ Supported commands include: `initialize`, `launch`, `continue`, `pause`, `next`,
 The `state` response includes instruction metadata at `state.current_instruction`,
 `state.current_instruction_hex`, `state.current_instruction_size`, and
 `state.current_instruction_bytes`.
+
+For browser mode packaging:
+
+- UI expects a module at `src/assets/wasm/hecate_vm_wasm.js`
+- A placeholder shim is included; replace it with the generated wasm-bindgen bundle for production
 
 The runtime always loads built-in defaults from `src/default.toml` and merges them with the file passed through `--config`.
 Only the keys you provide need to be overridden.

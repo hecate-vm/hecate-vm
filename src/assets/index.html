@@ -127,6 +127,16 @@
             font-family: var(--mono);
         }
 
+        select {
+            width: 100%;
+            border: 1px solid #d8c8b5;
+            border-radius: 10px;
+            padding: 9px 10px;
+            background: #fffdf8;
+            color: var(--ink);
+            font-family: var(--mono);
+        }
+
         .row {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -193,6 +203,23 @@
     <div class="layout">
         <section class="card">
             <h2>Program & Control</h2>
+            <div class="row">
+                <div>
+                    <label class="muted" for="mode">Execution mode</label>
+                    <select id="mode">
+                        <option value="local">Connect to local Hecate VM</option>
+                        <option value="wasm">Run in browser (WASM)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="muted" for="ws-port">Local websocket port</label>
+                    <input id="ws-port" value="8582" />
+                </div>
+            </div>
+
+            <label class="muted" for="example-select" style="margin-top:10px; display:block;">Examples</label>
+            <select id="example-select"></select>
+
             <label class="muted" for="bin-path">Binary path on host</label>
             <input id="bin-path" placeholder="/abs/path/to/program.elf" />
 
@@ -277,6 +304,7 @@
     <script>
         let seq = 1;
         let timer = null;
+        let adapter = null;
 
         function showMsg(text, isError = false) {
             const el = document.getElementById('msg');
@@ -288,41 +316,6 @@
             const v = String(raw || '').trim();
             if (v.startsWith('0x') || v.startsWith('0X')) return Number.parseInt(v, 16);
             return Number.parseInt(v, 10);
-        }
-
-        async function control(command, args = {}) {
-            const payload = {
-                id: seq++,
-                command,
-                arguments: args,
-            };
-            const res = await fetch('/api/v1/control', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
-            const body = await res.json();
-            if (!body.success) {
-                throw new Error(body.message || 'request failed');
-            }
-            return body.body || {};
-        }
-
-        function renderRegs(regs, pc) {
-            let out = '';
-            for (let i = 0; i < regs.length; i++) {
-                const name = 'x' + String(i).padStart(2, '0');
-                const v = (regs[i] >>> 0).toString(16).padStart(8, '0');
-                out += `${name}: 0x${v}${i % 2 ? '\n' : '    '}`;
-            }
-            out += `\npc: 0x${(pc >>> 0).toString(16).padStart(8, '0')}`;
-            return out;
-        }
-
-        function updateStatusPill(running) {
-            const el = document.getElementById('status-pill');
-            el.className = 'status ' + (running ? 'running' : 'paused');
-            el.textContent = running ? 'Running' : 'Paused';
         }
 
         function docsUrlForMnemonic(mnemonic) {
@@ -354,11 +347,267 @@
             container.appendChild(document.createTextNode(rest));
         }
 
+        function renderRegs(regs, pc) {
+            let out = '';
+            for (let i = 0; i < regs.length; i++) {
+                const name = 'x' + String(i).padStart(2, '0');
+                const v = (regs[i] >>> 0).toString(16).padStart(8, '0');
+                out += `${name}: 0x${v}${i % 2 ? '\n' : '    '}`;
+            }
+            out += `\npc: 0x${(pc >>> 0).toString(16).padStart(8, '0')}`;
+            return out;
+        }
+
+        function updateStatusPill(running) {
+            const el = document.getElementById('status-pill');
+            el.className = 'status ' + (running ? 'running' : 'paused');
+            el.textContent = running ? 'Running' : 'Paused';
+        }
+
+        function makeHttpControl() {
+            return async function httpControl(command, args = {}) {
+                const payload = {
+                    id: seq++,
+                    command,
+                    arguments: args,
+                };
+                const res = await fetch('/api/v1/control', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const body = await res.json();
+                if (!body.success) {
+                    throw new Error(body.message || 'request failed');
+                }
+                return body.body || {};
+            };
+        }
+
+        function makeLocalAdapter() {
+            const httpControl = makeHttpControl();
+            let ws = null;
+            const pending = new Map();
+
+            async function connectWs() {
+                const wsPort = parseMaybeHex(document.getElementById('ws-port').value) || 8582;
+                const wsUrl = `ws://127.0.0.1:${wsPort}`;
+
+                return await new Promise((resolve, reject) => {
+                    const socket = new WebSocket(wsUrl);
+                    const timeout = setTimeout(() => {
+                        socket.close();
+                        reject(new Error('websocket connect timeout'));
+                    }, 800);
+
+                    socket.onopen = () => {
+                        clearTimeout(timeout);
+                        ws = socket;
+
+                        socket.onmessage = (ev) => {
+                            let data = null;
+                            try {
+                                data = JSON.parse(ev.data);
+                            } catch {
+                                return;
+                            }
+                            const id = data.id ?? data.seq;
+                            if (!pending.has(id)) {
+                                return;
+                            }
+                            const entry = pending.get(id);
+                            pending.delete(id);
+                            if (data.success) {
+                                entry.resolve(data.body || {});
+                            } else {
+                                entry.reject(new Error(data.message || 'request failed'));
+                            }
+                        };
+
+                        socket.onclose = () => {
+                            ws = null;
+                            for (const entry of pending.values()) {
+                                entry.reject(new Error('websocket disconnected'));
+                            }
+                            pending.clear();
+                        };
+
+                        resolve();
+                    };
+
+                    socket.onerror = () => {
+                        clearTimeout(timeout);
+                        reject(new Error('websocket connection failed'));
+                    };
+                });
+            }
+
+            async function command(command, args = {}) {
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    return await httpControl(command, args);
+                }
+
+                const id = seq++;
+                const payload = JSON.stringify({ id, command, arguments: args });
+                return await new Promise((resolve, reject) => {
+                    pending.set(id, { resolve, reject });
+                    ws.send(payload);
+                });
+            }
+
+            async function listExamples() {
+                const res = await fetch('/api/v1/examples');
+                if (!res.ok) {
+                    return [];
+                }
+                const body = await res.json();
+                return body.examples || [];
+            }
+
+            return {
+                connect: async () => {
+                    try {
+                        await connectWs();
+                        showMsg('Connected over websocket');
+                    } catch {
+                        showMsg('Websocket unavailable, using HTTP fallback');
+                    }
+                },
+                command,
+                listExamples,
+            };
+        }
+
+        function makeWasmAdapter() {
+            let vm = null;
+
+            async function ensureVm() {
+                if (vm) {
+                    return vm;
+                }
+
+                const module = await import('./assets/wasm/hecate_vm_wasm.js');
+                if (module.createHecateVm) {
+                    vm = await module.createHecateVm();
+                } else if (module.HecateVmWasm) {
+                    vm = new module.HecateVmWasm();
+                } else {
+                    throw new Error('WASM module missing createHecateVm/HecateVmWasm export');
+                }
+                return vm;
+            }
+
+            async function listExamples() {
+                const res = await fetch('/assets/examples.json');
+                if (!res.ok) {
+                    return [];
+                }
+                const body = await res.json();
+                return body.examples || [];
+            }
+
+            async function command(command, args = {}) {
+                const runtime = await ensureVm();
+
+                if (typeof runtime.control === 'function') {
+                    const rsp = await runtime.control({ id: seq++, command, arguments: args });
+                    if (!rsp.success) {
+                        throw new Error(rsp.message || 'WASM command failed');
+                    }
+                    return rsp.body || {};
+                }
+
+                if (command === 'launch' || command === 'load') {
+                    const path = args.path;
+                    if (!path) {
+                        throw new Error('Missing path for launch');
+                    }
+                    const res = await fetch(path);
+                    if (!res.ok) {
+                        throw new Error(`Failed to fetch example: ${path}`);
+                    }
+                    const bytes = new Uint8Array(await res.arrayBuffer());
+                    if (typeof runtime.loadBytes !== 'function') {
+                        throw new Error('WASM runtime is missing loadBytes(bytes, path)');
+                    }
+                    return await runtime.loadBytes(bytes, path);
+                }
+
+                if (typeof runtime.command !== 'function') {
+                    throw new Error('WASM runtime is missing command(command, args)');
+                }
+                return await runtime.command(command, args);
+            }
+
+            return {
+                connect: async () => {
+                    await ensureVm();
+                    showMsg('WASM runtime initialized');
+                },
+                command,
+                listExamples,
+            };
+        }
+
+        async function populateExamples() {
+            const select = document.getElementById('example-select');
+            select.innerHTML = '';
+
+            const none = document.createElement('option');
+            none.value = '';
+            none.textContent = '(manual path)';
+            select.appendChild(none);
+
+            if (!adapter) {
+                return;
+            }
+
+            let examples = [];
+            try {
+                examples = await adapter.listExamples();
+            } catch {
+                examples = [];
+            }
+
+            for (const item of examples) {
+                const opt = document.createElement('option');
+                opt.value = item.path;
+                opt.textContent = `${item.name} (${item.path})`;
+                select.appendChild(opt);
+            }
+        }
+
+        async function switchMode() {
+            const mode = document.getElementById('mode').value;
+            adapter = mode === 'wasm' ? makeWasmAdapter() : makeLocalAdapter();
+
+            const pathInput = document.getElementById('bin-path');
+            pathInput.placeholder = mode === 'wasm' ? './examples/hello_world.elf' : '/abs/path/to/program.elf';
+
+            try {
+                await adapter.connect();
+            } catch (err) {
+                showMsg(err.message || String(err), true);
+            }
+
+            await populateExamples();
+            await refresh();
+        }
+
+        async function control(command, args = {}) {
+            if (!adapter) {
+                throw new Error('No active adapter');
+            }
+            return await adapter.command(command, args);
+        }
+
         async function refresh() {
             try {
                 const body = await control('state');
                 const s = body.state;
-                if (!s) return;
+                if (!s) {
+                    return;
+                }
 
                 updateStatusPill(!!s.running);
                 document.getElementById('pc').textContent = s.pc_hex;
@@ -381,8 +630,29 @@
             timer = setInterval(refresh, ms);
         }
 
+        document.getElementById('mode').addEventListener('change', switchMode);
+
+        document.getElementById('ws-port').addEventListener('change', async () => {
+            if (document.getElementById('mode').value === 'local') {
+                await switchMode();
+            }
+        });
+
+        document.getElementById('example-select').addEventListener('change', () => {
+            const selected = document.getElementById('example-select').value;
+            if (selected) {
+                document.getElementById('bin-path').value = selected;
+            }
+        });
+
         document.getElementById('btn-load').addEventListener('click', async () => {
-            const path = document.getElementById('bin-path').value.trim();
+            const selected = document.getElementById('example-select').value;
+            const path = (selected || document.getElementById('bin-path').value || '').trim();
+            if (!path) {
+                showMsg('Please choose an example or provide a path', true);
+                return;
+            }
+
             try {
                 const body = await control('launch', { path });
                 showMsg(`Loaded: entry ${body.entry_hex || ''}`);
@@ -452,7 +722,7 @@
         document.getElementById('refresh-ms').addEventListener('change', restartTimer);
 
         restartTimer();
-        refresh();
+        switchMode();
     </script>
 </body>
 

@@ -1,4 +1,7 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::fs;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -9,12 +12,15 @@ use rvsim::{CpuError, CpuState, Interp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
+use tungstenite::{Message, accept};
 
 use crate::{
     HecateClock, HecateMemory, RunStats, SimConfig, handle_syscall, load_elf, syscall_cycles_for,
 };
 
 const UI_HTML: &str = include_str!("assets/index.html");
+const EXAMPLES_JSON: &str = include_str!("assets/examples.json");
+const WASM_SHIM_JS: &str = include_str!("assets/wasm/hecate_vm_wasm.js");
 
 #[derive(Debug, Deserialize)]
 struct ControlRequest {
@@ -34,6 +40,12 @@ struct ControlResponse {
     command: String,
     message: Option<String>,
     body: Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ExampleEntry {
+    name: String,
+    path: String,
 }
 
 impl ControlRequest {
@@ -722,6 +734,112 @@ fn send_command(tx: &Sender<Envelope>, cmd: VmCommand) -> anyhow::Result<VmReply
         .context("failed to receive response from VM thread")
 }
 
+fn process_control_request(parsed: ControlRequest, tx: &Sender<Envelope>) -> ControlResponse {
+    let request_id = parsed.request_id();
+    let command = parsed.command.clone();
+
+    if let Some(raw_type) = parsed.request_type.as_deref() {
+        if raw_type != "request" {
+            return ControlResponse {
+                id: request_id,
+                seq: request_id,
+                success: false,
+                command,
+                message: Some("if provided, type must be 'request'".to_string()),
+                body: Value::Null,
+            };
+        }
+    }
+
+    let cmd = match command_from_request(&parsed) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return ControlResponse {
+                id: request_id,
+                seq: request_id,
+                success: false,
+                command,
+                message: Some(e.to_string()),
+                body: Value::Null,
+            };
+        }
+    };
+
+    let reply = match send_command(tx, cmd) {
+        Ok(reply) => reply,
+        Err(e) => VmReply::Error {
+            message: e.to_string(),
+        },
+    };
+
+    to_control_response(request_id, parsed.command, reply)
+}
+
+fn discover_examples() -> Vec<ExampleEntry> {
+    let mut out = Vec::<ExampleEntry>::new();
+    let mut seen = HashSet::<String>::new();
+
+    let normalize = |path: &str| {
+        let p = path.trim_start_matches("./").replace("\\", "/");
+        format!("./{}", p)
+    };
+
+    let mut push_if_exists = |name: &str, path: &str| {
+        let normalized = normalize(path);
+        if PathBuf::from(&normalized).exists() && seen.insert(normalized.clone()) {
+            out.push(ExampleEntry {
+                name: name.to_string(),
+                path: normalized,
+            });
+        }
+    };
+
+    push_if_exists(
+        "hello_world",
+        "./target/hecate-rv32-build/examples-build/hello_world/hello_world.elf",
+    );
+    push_if_exists(
+        "linked_list",
+        "./target/hecate-rv32-build/examples-build/linked_list/linked_list.elf",
+    );
+    push_if_exists(
+        "vector_contiguous",
+        "./target/hecate-rv32-build/examples-build/vector_contiguous/vector_contiguous.elf",
+    );
+    push_if_exists(
+        "rust_hello",
+        "./target/hecate-rv32-build/examples-build/rust_hello/rust_hello.elf",
+    );
+    push_if_exists(
+        "rust_hello (cargo target)",
+        "./examples/rust_hello/target/riscv32im-hecate-none-elf/release/rust_hello.elf",
+    );
+
+    if let Ok(dir) = fs::read_dir("./target/hecate-rv32-build/examples-build") {
+        for entry in dir.flatten() {
+            let sub = entry.path();
+            if !sub.is_dir() {
+                continue;
+            }
+            let name = sub
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("example")
+                .to_string();
+            let elf = sub.join(format!("{name}.elf"));
+            if elf.exists() {
+                let path = normalize(&elf.display().to_string());
+                if seen.insert(path.clone()) {
+                    out.push(ExampleEntry { name, path });
+                }
+            }
+        }
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 fn content_type_header(value: &str) -> Option<Header> {
     Header::from_bytes(&b"Content-Type"[..], value.as_bytes()).ok()
 }
@@ -741,6 +859,25 @@ fn respond_html(request: Request, status: u16, body: &str) {
         response.add_header(header);
     }
     let _ = request.respond(response);
+}
+
+fn respond_text(request: Request, status: u16, body: &str, content_type: &str) {
+    let mut response = Response::from_string(body).with_status_code(StatusCode(status));
+    if let Some(header) = content_type_header(content_type) {
+        response.add_header(header);
+    }
+    let _ = request.respond(response);
+}
+
+fn handle_examples_request(request: Request) {
+    let examples = discover_examples();
+    respond_json(request, 200, &serde_json::json!({ "examples": examples }));
+}
+
+fn handle_examples_manifest_request(request: Request) {
+    let value: Value = serde_json::from_str(EXAMPLES_JSON)
+        .unwrap_or_else(|_| serde_json::json!({ "examples": [] }));
+    respond_json(request, 200, &value);
 }
 
 fn command_from_request(req: &ControlRequest) -> anyhow::Result<VmCommand> {
@@ -811,52 +948,84 @@ fn handle_control_request(mut request: Request, tx: &Sender<Envelope>) {
         }
     };
 
-    if let Some(raw_type) = parsed.request_type.as_deref() {
-        if raw_type != "request" {
-            respond_json(
-                request,
-                400,
-                &serde_json::json!({ "success": false, "message": "if provided, type must be 'request'" }),
-            );
-            return;
-        }
-    }
-
-    let request_id = parsed.request_id();
-    let command = parsed.command.clone();
-    let cmd = match command_from_request(&parsed) {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            let rsp = ControlResponse {
-                id: request_id,
-                seq: request_id,
-                success: false,
-                command,
-                message: Some(e.to_string()),
-                body: Value::Null,
-            };
-            respond_json(
-                request,
-                200,
-                &serde_json::to_value(rsp).unwrap_or(Value::Null),
-            );
-            return;
-        }
-    };
-
-    let reply = match send_command(tx, cmd) {
-        Ok(reply) => reply,
-        Err(e) => VmReply::Error {
-            message: e.to_string(),
-        },
-    };
-
-    let rsp = to_control_response(request_id, parsed.command, reply);
+    let rsp = process_control_request(parsed, tx);
     respond_json(
         request,
         200,
         &serde_json::to_value(rsp).unwrap_or(Value::Null),
     );
+}
+
+fn handle_ws_client(stream: TcpStream, tx: Sender<Envelope>) -> anyhow::Result<()> {
+    let mut socket = accept(stream).context("websocket handshake failed")?;
+
+    loop {
+        let message = match socket.read() {
+            Ok(msg) => msg,
+            Err(_) => break,
+        };
+
+        if !message.is_text() {
+            continue;
+        }
+
+        let text = message.into_text().unwrap_or_default();
+        let parsed: ControlRequest = match serde_json::from_str(&text) {
+            Ok(req) => req,
+            Err(e) => {
+                let bad = serde_json::json!({
+                    "id": 0,
+                    "seq": 0,
+                    "success": false,
+                    "command": "unknown",
+                    "message": format!("invalid JSON: {e}"),
+                    "body": null
+                });
+                let _ = socket.send(Message::Text(bad.to_string().into()));
+                continue;
+            }
+        };
+
+        let rsp = process_control_request(parsed, &tx);
+        let payload = serde_json::to_string(&rsp).unwrap_or_else(|_| {
+            serde_json::json!({
+                "id": 0,
+                "seq": 0,
+                "success": false,
+                "command": "unknown",
+                "message": "serialization failed",
+                "body": null
+            })
+            .to_string()
+        });
+        socket.send(Message::Text(payload.into()))?;
+    }
+
+    Ok(())
+}
+
+fn run_ws_server(bind_addr: String, tx: Sender<Envelope>) -> anyhow::Result<()> {
+    let listener = TcpListener::bind(&bind_addr)
+        .map_err(|e| anyhow!("Failed to bind websocket server at {bind_addr}: {e}"))?;
+    println!("Control websocket listening on ws://{bind_addr}");
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let tx_clone = tx.clone();
+                thread::spawn(move || {
+                    if let Err(err) = handle_ws_client(stream, tx_clone) {
+                        eprintln!("Websocket client error: {err}");
+                    }
+                });
+            }
+            Err(err) => {
+                eprintln!("Websocket accept error: {err}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub fn serve(
@@ -885,11 +1054,22 @@ pub fn serve(
     });
 
     let bind_addr = format!("127.0.0.1:{port}");
+    let ws_port = port.saturating_add(1);
+    let ws_bind_addr = format!("127.0.0.1:{ws_port}");
+
     let server = Server::http(&bind_addr)
         .map_err(|e| anyhow!("Failed to bind debug UI server at {bind_addr}: {e}"))?;
 
+    let ws_tx = tx.clone();
+    thread::spawn(move || {
+        if let Err(err) = run_ws_server(ws_bind_addr, ws_tx) {
+            eprintln!("Websocket server failed: {err}");
+        }
+    });
+
     println!("Debug UI listening on http://{bind_addr}");
     println!("Use /api/v1/control for control messages.");
+    println!("Use ws://127.0.0.1:{ws_port} for websocket control.");
 
     for request in server.incoming_requests() {
         let method = request.method().clone();
@@ -897,6 +1077,11 @@ pub fn serve(
 
         match (method, url.as_str()) {
             (Method::Get, "/") => respond_html(request, 200, UI_HTML),
+            (Method::Get, "/api/v1/examples") => handle_examples_request(request),
+            (Method::Get, "/assets/examples.json") => handle_examples_manifest_request(request),
+            (Method::Get, "/assets/wasm/hecate_vm_wasm.js") => {
+                respond_text(request, 200, WASM_SHIM_JS, "text/javascript; charset=utf-8")
+            }
             (Method::Post, "/api/v1/control") => handle_control_request(request, &tx),
             _ => respond_json(
                 request,
@@ -904,7 +1089,7 @@ pub fn serve(
                 &serde_json::json!({
                     "success": false,
                     "message": "not found",
-                    "hint": "use GET / or POST /api/v1/control"
+                    "hint": "use GET /, GET /api/v1/examples, GET /assets/examples.json, GET /assets/wasm/hecate_vm_wasm.js, or POST /api/v1/control"
                 }),
             ),
         }

@@ -1,0 +1,20 @@
+{
+  "examples": [
+    {
+      "name": "hello_world",
+      "path": "./examples/hello_world.elf"
+    },
+    {
+      "name": "linked_list",
+      "path": "./examples/linked_list.elf"
+    },
+    {
+      "name": "rust_hello",
+      "path": "./examples/rust_hello.elf"
+    },
+    {
+      "name": "vector_contiguous",
+      "path": "./examples/vector_contiguous.elf"
+    }
+  ]
+}
