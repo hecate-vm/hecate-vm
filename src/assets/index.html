@@ -199,10 +199,6 @@
         <section class="card">
             <h2>Program & Control</h2>
 
-            <div>
-                <button class="primary" id="btn-connect">Connect to local VM</button>
-            </div>
-
             <div id="examples-block" style="margin-top:10px;">
                 <label class="muted" for="example-select" id="examples-label">Examples</label>
                 <select id="example-select"></select>
@@ -413,12 +409,6 @@
 
         function wait(ms) {
             return new Promise((resolve) => setTimeout(resolve, ms));
-        }
-
-        function updateConnectionControls() {
-            const button = document.getElementById('btn-connect');
-            const remoteConnected = !!(adapter && adapter.kind === 'remote');
-            button.textContent = remoteConnected ? 'Disconnect' : 'Connect to local VM';
         }
 
         function clearSnapshotView() {
@@ -634,7 +624,6 @@
             }
             clearSnapshotView();
             renderExamples();
-            updateConnectionControls();
             if (message) {
                 showMsg(message);
             }
@@ -668,7 +657,6 @@
                 availableExamples = await loadStaticExamples().catch(() => []);
             }
             renderExamples();
-            updateConnectionControls();
             if (message) {
                 showMsg(message);
             }
@@ -861,18 +849,6 @@
             await refresh();
         }
 
-        document.getElementById('btn-connect').addEventListener('click', async () => {
-            if (adapter && adapter.kind === 'remote') {
-                await handleRemoteDisconnect('Disconnected from local VM');
-                return;
-            }
-            try {
-                await connectToRemote(LOCAL_WS_URL);
-            } catch (error) {
-                showMsg(error.message || String(error), true);
-            }
-        });
-
         document.getElementById('example-select').addEventListener('change', async (event) => {
             const selected = event.target.value;
             if (!selected) {
@@ -989,7 +965,6 @@
         document.getElementById('refresh-ms').addEventListener('change', restartTimer);
 
         async function boot() {
-            updateConnectionControls();
             showMsg('UI ready. Connecting to the local VM...');
 
             await wait(0);
