@@ -44,7 +44,9 @@ fn main() {
     println!("cargo:rerun-if-changed=runtime");
 
     let target = env::var("TARGET").unwrap_or_default();
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let wasm_target = target.contains("wasm32");
+    let linux_target = target_os == "linux";
 
     for example in EXAMPLES {
         println!("cargo:rerun-if-env-changed={}", example.feature_env);
@@ -55,7 +57,7 @@ fn main() {
         .filter(|example| env::var_os(example.feature_env).is_some())
         .collect();
 
-    if !wasm_target && !enabled.is_empty() {
+    if linux_target && !wasm_target && !enabled.is_empty() {
         let selected = enabled
             .iter()
             .map(|example| example.build_name)
@@ -95,9 +97,9 @@ fn main() {
             PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir"))
                 .join(example.built_path);
         if !built_path.exists() {
-            if wasm_target {
+            if wasm_target || !linux_target {
                 println!(
-                    "cargo:warning=skipping missing wasm bundled example {} ({})",
+                    "cargo:warning=skipping missing bundled example {} ({})",
                     example.name,
                     built_path.display()
                 );
