@@ -275,7 +275,7 @@ checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
 
 [[package]]
 name = "hecate-vm"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "base64",
