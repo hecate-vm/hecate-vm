@@ -135,13 +135,6 @@
             margin-top: 8px;
         }
 
-        .connection-row {
-            display: grid;
-            grid-template-columns: 1fr auto;
-            gap: 8px;
-            align-items: end;
-        }
-
         .kv {
             display: grid;
             grid-template-columns: 160px 1fr;
@@ -193,10 +186,6 @@
             .layout {
                 grid-template-columns: 1fr;
             }
-
-            .connection-row {
-                grid-template-columns: 1fr;
-            }
         }
     </style>
 </head>
@@ -211,11 +200,7 @@
             <h2>Program & Control</h2>
 
             <div>
-                <label class="muted" for="ws-url">Websocket URL</label>
-                <div class="connection-row">
-                    <input id="ws-url" placeholder="ws://127.0.0.1:8582" />
-                    <button class="primary" id="btn-connect">Connect</button>
-                </div>
+                <button class="primary" id="btn-connect">Connect to local VM</button>
             </div>
 
             <div id="examples-block" style="margin-top:10px;">
@@ -322,7 +307,7 @@
         let currentSnapshot = null;
         let availableExamples = [];
         let lastExamplesSignature = null;
-        let lastRemoteUrl = null;
+        const LOCAL_WS_URL = 'ws://127.0.0.1:8582';
 
         function formatHex32(value) {
             return `0x${(Number(value || 0) >>> 0).toString(16).padStart(8, '0')}`;
@@ -409,19 +394,12 @@
             const el = document.getElementById('status-pill');
             el.className = 'status ' + (running ? 'running' : 'paused');
             el.textContent = running ? 'Running' : 'Paused';
+            document.getElementById('btn-step').disabled = !!running;
         }
 
         function isGitHubPages() {
             return window.location.hostname.endsWith('github.io');
         }
-
-        // function defaultWsUrl() {
-        //     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        //     const host = window.location.hostname || '127.0.0.1';
-        //     const port = Number.parseInt(window.location.port || '0', 10);
-        //     const wsPort = Number.isFinite(port) && port > 0 ? String(port + 1) : '8582';
-        //     return `${protocol}//${host}:${wsPort}`;
-        // }
 
         function bytesToBase64(bytes) {
             let binary = '';
@@ -437,18 +415,10 @@
             return new Promise((resolve) => setTimeout(resolve, ms));
         }
 
-        function connectionControls() {
-            return {
-                input: document.getElementById('ws-url'),
-                button: document.getElementById('btn-connect'),
-            };
-        }
-
         function updateConnectionControls() {
-            const { input, button } = connectionControls();
+            const button = document.getElementById('btn-connect');
             const remoteConnected = !!(adapter && adapter.kind === 'remote');
-            input.disabled = remoteConnected;
-            button.textContent = remoteConnected ? 'Disconnect' : 'Connect';
+            button.textContent = remoteConnected ? 'Disconnect' : 'Connect to local VM';
         }
 
         function clearSnapshotView() {
@@ -691,9 +661,6 @@
                 adapter.disconnect();
             }
             adapter = nextAdapter;
-            if (adapter.kind === 'remote') {
-                lastRemoteUrl = document.getElementById('ws-url').value.trim() || lastRemoteUrl;
-            }
             await adapter.connect();
             restartTimer();
             availableExamples = await adapter.listExamples().catch(() => []);
@@ -896,18 +863,11 @@
 
         document.getElementById('btn-connect').addEventListener('click', async () => {
             if (adapter && adapter.kind === 'remote') {
-                await handleRemoteDisconnect(`Disconnected from ${lastRemoteUrl || 'websocket backend'}`);
-                return;
-            }
-
-            const wsUrl = document.getElementById('ws-url').value.trim();
-            if (!wsUrl) {
-                showMsg('Please enter a websocket URL', true);
+                await handleRemoteDisconnect('Disconnected from local VM');
                 return;
             }
             try {
-                lastRemoteUrl = wsUrl;
-                await connectToRemote(wsUrl);
+                await connectToRemote(LOCAL_WS_URL);
             } catch (error) {
                 showMsg(error.message || String(error), true);
             }
@@ -1029,8 +989,6 @@
         document.getElementById('refresh-ms').addEventListener('change', restartTimer);
 
         async function boot() {
-            const wsUrl = 'ws://127.0.0.1:8582'; // defaultWsUrl();
-            document.getElementById('ws-url').value = wsUrl;
             updateConnectionControls();
             showMsg('UI ready. Connecting to the local VM...');
 
@@ -1040,7 +998,7 @@
                 return;
             }
 
-            await connectToRemoteOrFallback(wsUrl);
+            await connectToRemoteOrFallback(LOCAL_WS_URL);
         }
 
         boot().catch((error) => {
