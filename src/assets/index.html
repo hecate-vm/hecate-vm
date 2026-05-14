@@ -352,9 +352,15 @@
 
         function renderInstructionWithLink(rawInstruction) {
             const container = document.getElementById('instr');
+            const text = String(rawInstruction || 'Unavailable').trim();
+
+            if (text === 'Unavailable') {
+                container.textContent = text;
+                return;
+            }
+
             container.textContent = '';
 
-            const text = String(rawInstruction || 'Unavailable').trim();
             const match = text.match(/^([a-z][a-z0-9.]*)\b(.*)$/i);
             if (!match) {
                 container.textContent = text;
