@@ -229,7 +229,7 @@
                 <button class="primary" id="btn-load">Upload ELF</button>
                 <button class="primary" id="btn-run">Run</button>
                 <button id="btn-pause">Pause</button>
-                <button id="btn-step">Step 1</button>
+                <button id="btn-step">Step</button>
                 <button id="btn-reset">Reset</button>
             </div>
 
@@ -788,12 +788,15 @@
             const wsUrl = defaultWsUrl();
             document.getElementById('ws-url').value = wsUrl;
             restartTimer();
-            showMsg('UI ready. Click Connect to attach to the VM.');
+            showMsg('UI ready. Connecting to the local VM...');
 
             if (isGitHubPages()) {
                 showMsg('Static hosting without the websocket backend is no longer supported by this page.', true);
                 return;
             }
+
+            await wait(0);
+            await connectToRemote(wsUrl);
         }
 
         boot().catch((error) => {
