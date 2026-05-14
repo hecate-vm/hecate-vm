@@ -9,11 +9,13 @@ use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
 use rvsim::elf::{ELF_PROGRAM_TYPE_LOADABLE, Elf32};
 use rvsim::{Clock, CpuError, CpuState, Interp, Memory, MemoryAccess, Op};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+mod debug_ui;
 
 const DEFAULT_CONFIG: &str = include_str!("default.toml");
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 struct CacheHits {
     l1i: u64,
     l1d: u64,
@@ -21,7 +23,7 @@ struct CacheHits {
     l3: u64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 struct RunStats {
     cycles: u64,
     instret: u64,
@@ -393,6 +395,10 @@ impl HecateClock {
             max_instructions,
         }
     }
+
+    fn set_max_instructions(&mut self, max_instructions: Option<u64>) {
+        self.max_instructions = max_instructions;
+    }
 }
 
 impl Clock for HecateClock {
@@ -434,7 +440,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Action {
     Run {
-        path: PathBuf,
+        path: Option<PathBuf>,
         #[arg(long, default_value_t = 64)]
         cache_line_size: u32,
         #[arg(long, default_value_t = 32 * 1024)]
@@ -450,6 +456,12 @@ enum Action {
         /// Path to a TOML config file (merged with the built-in defaults).
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Enable the browser-based debug UI and remote control API.
+        #[arg(long, default_value_t = false)]
+        debug_ui: bool,
+        /// TCP port for the debug UI and API (localhost only).
+        #[arg(long, default_value_t = 8581)]
+        debug_port: u16,
     },
 }
 
@@ -683,6 +695,8 @@ fn main() -> anyhow::Result<()> {
             max_instructions,
             dump_registers,
             config: config_path,
+            debug_ui,
+            debug_port,
         } => {
             let default_raw: SimConfigRaw = toml::from_str(DEFAULT_CONFIG)
                 .context("Failed to parse built-in default config")?;
@@ -695,16 +709,35 @@ fn main() -> anyhow::Result<()> {
             }
             .resolve()?;
 
-            run_elf(
-                path,
-                cache_line_size,
-                l1_size,
-                l2_size,
-                l3_size,
-                max_instructions,
-                dump_registers,
-                config,
-            )?
+            if debug_ui {
+                debug_ui::serve(
+                    path,
+                    cache_line_size,
+                    l1_size,
+                    l2_size,
+                    l3_size,
+                    max_instructions,
+                    config,
+                    debug_port,
+                )?;
+            } else {
+                let Some(path) = path else {
+                    return Err(anyhow!(
+                        "A binary path is required unless --debug-ui is enabled."
+                    ));
+                };
+
+                run_elf(
+                    path,
+                    cache_line_size,
+                    l1_size,
+                    l2_size,
+                    l3_size,
+                    max_instructions,
+                    dump_registers,
+                    config,
+                )?;
+            }
         }
     }
 

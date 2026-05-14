@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hecate VM Debug UI</title>
+    <style>
+        :root {
+            --bg: #f4efe7;
+            --ink: #1c1b1a;
+            --muted: #5a554f;
+            --card: #fffaf3;
+            --accent: #d14b24;
+            --accent-soft: #f8d9d0;
+            --ok: #197043;
+            --warn: #9a6700;
+            --mono: "IBM Plex Mono", "Fira Code", "JetBrains Mono", monospace;
+            --display: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 15% 10%, #ffe8c7 0%, transparent 30%),
+                radial-gradient(circle at 90% 30%, #fbd9cc 0%, transparent 26%),
+                linear-gradient(120deg, #f8f1e8, #f3ece2 40%, #ece3d6);
+            font-family: var(--display);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1.2fr 1fr;
+            gap: 14px;
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid #eadfce;
+            border-radius: 14px;
+            box-shadow: 0 10px 30px rgba(92, 66, 43, 0.08);
+            padding: 14px;
+            animation: rise 280ms ease-out;
+        }
+
+        @keyframes rise {
+            from {
+                transform: translateY(6px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        h1 {
+            margin: 0 0 8px;
+            font-size: clamp(1.3rem, 2.2vw, 2.1rem);
+            letter-spacing: 0.02em;
+        }
+
+        h2 {
+            margin: 0 0 10px;
+            font-size: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        .mono {
+            font-family: var(--mono);
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 10px 0;
+        }
+
+        button {
+            border: 0;
+            border-radius: 10px;
+            padding: 9px 12px;
+            font-weight: 700;
+            cursor: pointer;
+            background: var(--accent-soft);
+            color: #7c1f08;
+        }
+
+        button.primary {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        input {
+            width: 100%;
+            border: 1px solid #d8c8b5;
+            border-radius: 10px;
+            padding: 9px 10px;
+            background: #fffdf8;
+            color: var(--ink);
+            font-family: var(--mono);
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .kv {
+            display: grid;
+            grid-template-columns: 160px 1fr;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-family: var(--mono);
+            font-size: 0.92rem;
+        }
+
+        pre {
+            margin: 0;
+            border-radius: 10px;
+            border: 1px solid #eadfce;
+            background: #fff;
+            padding: 10px;
+            max-height: 280px;
+            overflow: auto;
+            font-family: var(--mono);
+            font-size: 0.84rem;
+            line-height: 1.35;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 5px 9px;
+            border-radius: 999px;
+            font-size: 0.82rem;
+            font-weight: 800;
+            margin-left: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .running {
+            background: #d6f3e4;
+            color: var(--ok);
+        }
+
+        .paused {
+            background: #fef0d5;
+            color: var(--warn);
+        }
+
+        @media (max-width: 980px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card" style="margin-bottom:14px;">
+        <h1>Hecate VM Debug Console <span id="status-pill" class="status paused">Paused</span></h1>
+    </div>
+
+    <div class="layout">
+        <section class="card">
+            <h2>Program & Control</h2>
+            <label class="muted" for="bin-path">Binary path on host</label>
+            <input id="bin-path" placeholder="/abs/path/to/program.elf" />
+
+            <div class="controls">
+                <button class="primary" id="btn-load">Load</button>
+                <button class="primary" id="btn-run">Run</button>
+                <button id="btn-pause">Pause</button>
+                <button id="btn-step">Step 1</button>
+                <button id="btn-reset">Reset</button>
+            </div>
+
+            <div class="row">
+                <div>
+                    <label class="muted" for="step-count">Step count</label>
+                    <input id="step-count" value="1" />
+                </div>
+                <div>
+                    <label class="muted" for="refresh-ms">Refresh ms</label>
+                    <input id="refresh-ms" value="250" />
+                </div>
+            </div>
+
+            <div style="margin-top:10px;" class="mono" id="msg"></div>
+
+            <h2 style="margin-top:14px;">Memory Inspector</h2>
+            <div class="row">
+                <div>
+                    <label class="muted" for="mem-addr">Address</label>
+                    <input id="mem-addr" value="0x00000000" />
+                </div>
+                <div>
+                    <label class="muted" for="mem-len">Length</label>
+                    <input id="mem-len" value="64" />
+                </div>
+            </div>
+            <div class="controls">
+                <button id="btn-read-mem">Read Memory</button>
+            </div>
+            <pre id="mem-view">(empty)</pre>
+        </section>
+
+        <section class="card">
+            <h2>Live Snapshot</h2>
+            <div class="kv">
+                <div>PC</div>
+                <div id="pc" class="mono"></div>
+            </div>
+            <div class="kv">
+                <div>Entry</div>
+                <div id="entry" class="mono"></div>
+            </div>
+            <div class="kv">
+                <div>Loaded Binary</div>
+                <div id="loaded" class="mono"></div>
+            </div>
+            <div class="kv">
+                <div>Stop Reason</div>
+                <div id="stop" class="mono"></div>
+            </div>
+            <div class="kv">
+                <div>Cycles</div>
+                <div id="cycles" class="mono"></div>
+            </div>
+            <div class="kv">
+                <div>Instructions</div>
+                <div id="instret" class="mono"></div>
+            </div>
+            <div class="kv">
+                <div>Syscalls</div>
+                <div id="syscalls" class="mono"></div>
+            </div>
+
+            <h2 style="margin-top:14px;">Registers</h2>
+            <pre id="regs"></pre>
+        </section>
+    </div>
+
+    <script>
+        let seq = 1;
+        let timer = null;
+
+        function showMsg(text, isError = false) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.style.color = isError ? '#a1260d' : '#2f6b4f';
+        }
+
+        function parseMaybeHex(raw) {
+            const v = String(raw || '').trim();
+            if (v.startsWith('0x') || v.startsWith('0X')) return Number.parseInt(v, 16);
+            return Number.parseInt(v, 10);
+        }
+
+        async function dap(command, args = {}) {
+            const payload = {
+                seq: seq++,
+                type: 'request',
+                command,
+                arguments: args,
+            };
+            const res = await fetch('/api/dap', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const body = await res.json();
+            if (!body.success) {
+                throw new Error(body.message || 'request failed');
+            }
+            return body.body || {};
+        }
+
+        function renderRegs(regs, pc) {
+            let out = '';
+            for (let i = 0; i < regs.length; i++) {
+                const name = 'x' + String(i).padStart(2, '0');
+                const v = (regs[i] >>> 0).toString(16).padStart(8, '0');
+                out += `${name}: 0x${v}${i % 2 ? '\n' : '    '}`;
+            }
+            out += `\npc: 0x${(pc >>> 0).toString(16).padStart(8, '0')}`;
+            return out;
+        }
+
+        function updateStatusPill(running) {
+            const el = document.getElementById('status-pill');
+            el.className = 'status ' + (running ? 'running' : 'paused');
+            el.textContent = running ? 'Running' : 'Paused';
+        }
+
+        async function refresh() {
+            try {
+                const body = await dap('state');
+                const s = body.state;
+                if (!s) return;
+
+                updateStatusPill(!!s.running);
+                document.getElementById('pc').textContent = s.pc_hex;
+                document.getElementById('entry').textContent = s.entry_hex;
+                document.getElementById('loaded').textContent = s.loaded_path || '(none)';
+                document.getElementById('stop').textContent = s.last_stop_reason;
+                document.getElementById('cycles').textContent = String(s.stats.cycles);
+                document.getElementById('instret').textContent = String(s.stats.instret);
+                document.getElementById('syscalls').textContent = String(s.stats.syscall_count);
+                document.getElementById('regs').textContent = renderRegs(s.registers, s.pc);
+            } catch (err) {
+                showMsg(err.message || String(err), true);
+            }
+        }
+
+        function restartTimer() {
+            if (timer) clearInterval(timer);
+            const ms = Math.max(50, parseMaybeHex(document.getElementById('refresh-ms').value) || 250);
+            timer = setInterval(refresh, ms);
+        }
+
+        document.getElementById('btn-load').addEventListener('click', async () => {
+            const path = document.getElementById('bin-path').value.trim();
+            try {
+                const body = await dap('launch', { path });
+                showMsg(`Loaded: entry ${body.entry_hex || ''}`);
+                await refresh();
+            } catch (err) {
+                showMsg(err.message || String(err), true);
+            }
+        });
+
+        document.getElementById('btn-run').addEventListener('click', async () => {
+            try {
+                await dap('continue');
+                showMsg('Running');
+            } catch (err) {
+                showMsg(err.message || String(err), true);
+            }
+        });
+
+        document.getElementById('btn-pause').addEventListener('click', async () => {
+            try {
+                await dap('pause');
+                showMsg('Paused');
+                await refresh();
+            } catch (err) {
+                showMsg(err.message || String(err), true);
+            }
+        });
+
+        document.getElementById('btn-step').addEventListener('click', async () => {
+            try {
+                const count = Math.max(1, parseMaybeHex(document.getElementById('step-count').value) || 1);
+                await dap('next', { count });
+                await refresh();
+            } catch (err) {
+                showMsg(err.message || String(err), true);
+            }
+        });
+
+        document.getElementById('btn-reset').addEventListener('click', async () => {
+            try {
+                await dap('restart');
+                showMsg('Reset complete');
+                await refresh();
+            } catch (err) {
+                showMsg(err.message || String(err), true);
+            }
+        });
+
+        document.getElementById('btn-read-mem').addEventListener('click', async () => {
+            const addr = parseMaybeHex(document.getElementById('mem-addr').value);
+            const len = parseMaybeHex(document.getElementById('mem-len').value);
+            try {
+                const body = await dap('readMemory', { addr, len });
+                const bytes = body.bytes || [];
+                let lines = [];
+                for (let i = 0; i < bytes.length; i += 16) {
+                    const row = bytes.slice(i, i + 16).map(b => Number(b).toString(16).padStart(2, '0')).join(' ');
+                    const rowAddr = (body.addr + i) >>> 0;
+                    lines.push(`0x${rowAddr.toString(16).padStart(8, '0')}: ${row}`);
+                }
+                document.getElementById('mem-view').textContent = lines.join('\n') || '(empty)';
+            } catch (err) {
+                showMsg(err.message || String(err), true);
+            }
+        });
+
+        document.getElementById('refresh-ms').addEventListener('change', restartTimer);
+
+        restartTimer();
+        refresh();
+    </script>
+</body>
+
+</html>

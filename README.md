@@ -12,6 +12,7 @@ Quick run:
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
 - [Usage](#usage)
+  - [Debug UI (optional)](#debug-ui-optional)
 - [Performance Tracking](#performance-tracking)
 - [Sources](#sources)
 
@@ -59,7 +60,61 @@ cargo run -- run /path/to/program.elf --dump-registers
 cargo run -- run /path/to/program.elf --max-instructions 1000000
 cargo run -- run /path/to/program.elf --cache-line-size 64 --l1-size 32768 --l2-size 262144 --l3-size 8388608
 cargo run -- run /path/to/program.elf --config /path/to/hecate.toml
+cargo run -- run /path/to/program.elf --debug-ui --debug-port 8581
+cargo run -- run --debug-ui --debug-port 8581
 ```
+
+### Debug UI (optional)
+
+Enable the interactive debugger/UI with `--debug-ui`.
+
+When enabled:
+
+- The VM starts a local server at `http://127.0.0.1:8581` (or `--debug-port`)
+- You can load binaries dynamically from the UI
+- You can run, pause, step, and reset execution
+- You can inspect registers, PC, and memory while the simulation runs
+- VM control happens through message passing to a dedicated VM worker thread
+
+The debug API is exposed via `POST /api/dap` using DAP-style request/response messages.
+
+Native DAP transport is also exposed on `127.0.0.1:8582` (or `--dap-port`) using standard
+Debug Adapter Protocol framing (`Content-Length` + JSON payload).
+
+Implemented DAP requests include:
+
+- `initialize`
+- `launch` / `attach` (binary path via `program` or `path`)
+- `configurationDone`
+- `threads`
+- `stackTrace`
+- `scopes`
+- `variables`
+- `continue`
+- `pause`
+- `next` / `stepIn` / `stepOut`
+- `restart`
+- `readMemory`
+- `setBreakpoints` (returns unverified/empty breakpoints for now)
+- `disconnect` / `terminate`
+
+Emitted DAP events include `initialized`, `continued`, `stopped`, and `terminated`.
+
+Example request:
+
+```json
+{
+  "seq": 1,
+  "type": "request",
+  "command": "readMemory",
+  "arguments": {
+    "addr": "0x1000",
+    "len": 64
+  }
+}
+```
+
+Supported commands include: `initialize`, `launch`, `continue`, `pause`, `next`, `restart`, `readMemory`, `state`, `disconnect`.
 
 The runtime always loads built-in defaults from `src/default.toml` and merges them with the file passed through `--config`.
 Only the keys you provide need to be overridden.
