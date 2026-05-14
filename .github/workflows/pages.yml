@@ -37,6 +37,15 @@ jobs:
         with:
           version: latest
 
+      - name: Install sample build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang lld
+
+      - name: Build sample ELFs for browser examples
+        run: |
+          HECATE_EXAMPLES=hello_world,linked_list,vector_contiguous bash scripts/build_samples.sh
+
       - name: Build wasm package
         run: |
           wasm-pack build --target web --out-dir "${WASM_PKG_DIR}" --out-name hecate_vm_wasm
@@ -49,9 +58,21 @@ jobs:
       - name: Stage GitHub Pages files
         run: |
           rm -rf "${SITE_DIR}"
-          mkdir -p "${SITE_DIR}/assets/wasm"
+          mkdir -p "${SITE_DIR}/assets/wasm" "${SITE_DIR}/examples"
           cp src/assets/index.html "${SITE_DIR}/index.html"
           cp "${WASM_PKG_DIR}"/* "${SITE_DIR}/assets/wasm/"
+          cp target/hecate-rv32-build/examples-build/hello_world/hello_world.elf "${SITE_DIR}/examples/"
+          cp target/hecate-rv32-build/examples-build/linked_list/linked_list.elf "${SITE_DIR}/examples/"
+          cp target/hecate-rv32-build/examples-build/vector_contiguous/vector_contiguous.elf "${SITE_DIR}/examples/"
+          cat > "${SITE_DIR}/examples/manifest.json" <<'JSON'
+          {
+            "examples": [
+              { "name": "hello_world.elf", "path": "examples/hello_world.elf" },
+              { "name": "linked_list.elf", "path": "examples/linked_list.elf" },
+              { "name": "vector_contiguous.elf", "path": "examples/vector_contiguous.elf" }
+            ]
+          }
+          JSON
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3

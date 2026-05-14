@@ -276,7 +276,15 @@ impl HecateVmWasm {
                     .vm
                     .load(name, bytes)
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                response(id, command, to_json_value(&state)?)
+                response(
+                    id,
+                    command,
+                    serde_json::json!({
+                        "entry": state.entry_point,
+                        "entryHex": format!("0x{:08x}", state.entry_point),
+                        "state": to_json_value(&state)?
+                    }),
+                )
             }
             "launchBytes" | "upload" => {
                 let name = parse_string_value(args, "name")?;
@@ -285,7 +293,15 @@ impl HecateVmWasm {
                     .vm
                     .load(name, &bytes)
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                response(id, command, to_json_value(&state)?)
+                response(
+                    id,
+                    command,
+                    serde_json::json!({
+                        "entry": state.entry_point,
+                        "entryHex": format!("0x{:08x}", state.entry_point),
+                        "state": to_json_value(&state)?
+                    }),
+                )
             }
             "continue" | "run" => {
                 self.vm
@@ -293,7 +309,20 @@ impl HecateVmWasm {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
                 response(id, command, Value::Null)
             }
-            "pause" => response(id, command, to_json_value(&self.vm.pause())?),
+            "tick" => {
+                let quantum = parse_u64_value(args, "quantum", 5_000)?;
+                self.vm.tick_running(quantum);
+                response(
+                    id,
+                    command,
+                    serde_json::json!({ "state": to_json_value(&self.vm.state())? }),
+                )
+            }
+            "pause" => response(
+                id,
+                command,
+                serde_json::json!({ "state": to_json_value(&self.vm.pause())? }),
+            ),
             "next" | "step" => {
                 let count = parse_u64_value(args, "count", 1)?;
                 let state = if count <= 1 {
@@ -302,34 +331,46 @@ impl HecateVmWasm {
                     self.vm.step_count(count)
                 }
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                response(id, command, to_json_value(&state)?)
+                response(
+                    id,
+                    command,
+                    serde_json::json!({ "state": to_json_value(&state)? }),
+                )
             }
             "stepOver" | "step_over" => response(
                 id,
                 command,
-                to_json_value(
-                    &self
-                        .vm
-                        .step_over()
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?,
-                )?,
+                serde_json::json!({
+                    "state": to_json_value(
+                        &self
+                            .vm
+                            .step_over()
+                            .map_err(|e| JsValue::from_str(&e.to_string()))?,
+                    )?
+                }),
             ),
             "stepOut" | "step_out" => response(
                 id,
                 command,
-                to_json_value(
-                    &self
-                        .vm
-                        .step_out()
-                        .map_err(|e| JsValue::from_str(&e.to_string()))?,
-                )?,
+                serde_json::json!({
+                    "state": to_json_value(
+                        &self
+                            .vm
+                            .step_out()
+                            .map_err(|e| JsValue::from_str(&e.to_string()))?,
+                    )?
+                }),
             ),
             "restart" | "reset" => {
                 let state = self
                     .vm
                     .reset(parse_reset_policy(args)?)
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                response(id, command, to_json_value(&state)?)
+                response(
+                    id,
+                    command,
+                    serde_json::json!({ "state": to_json_value(&state)? }),
+                )
             }
             "readMemory" | "read" => {
                 let addr = parse_u32_value(args, "addr", 0)?;
@@ -346,17 +387,33 @@ impl HecateVmWasm {
                 self.vm
                     .write(addr, &bytes)
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                response(id, command, to_json_value(&self.vm.state())?)
+                response(
+                    id,
+                    command,
+                    serde_json::json!({ "state": to_json_value(&self.vm.state())? }),
+                )
             }
-            "state" | "registers" => response(id, command, to_json_value(&self.vm.state())?),
-            "dump" => response(id, command, to_json_value(&self.vm.dump())?),
+            "state" | "registers" => response(
+                id,
+                command,
+                serde_json::json!({ "state": to_json_value(&self.vm.state())? }),
+            ),
+            "dump" => response(
+                id,
+                command,
+                serde_json::json!({ "dump": to_json_value(&self.vm.dump())? }),
+            ),
             "restore" => {
                 let dump = parse_dump_value(args)?;
                 let state = self
                     .vm
                     .restore(dump)
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
-                response(id, command, to_json_value(&state)?)
+                response(
+                    id,
+                    command,
+                    serde_json::json!({ "state": to_json_value(&state)? }),
+                )
             }
             other => error_response(
                 id,

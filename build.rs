@@ -50,16 +50,12 @@ fn main() {
         println!("cargo:rerun-if-env-changed={}", example.feature_env);
     }
 
-    let enabled: Vec<&ExampleSpec> = if wasm_target {
-        Vec::new()
-    } else {
-        EXAMPLES
-            .iter()
-            .filter(|example| env::var_os(example.feature_env).is_some())
-            .collect()
-    };
+    let enabled: Vec<&ExampleSpec> = EXAMPLES
+        .iter()
+        .filter(|example| env::var_os(example.feature_env).is_some())
+        .collect();
 
-    if !enabled.is_empty() {
+    if !wasm_target && !enabled.is_empty() {
         let selected = enabled
             .iter()
             .map(|example| example.build_name)
@@ -99,6 +95,14 @@ fn main() {
             PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir"))
                 .join(example.built_path);
         if !built_path.exists() {
+            if wasm_target {
+                println!(
+                    "cargo:warning=skipping missing wasm bundled example {} ({})",
+                    example.name,
+                    built_path.display()
+                );
+                continue;
+            }
             panic!("missing built example: {}", built_path.display());
         }
 

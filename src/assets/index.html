@@ -498,6 +498,24 @@
             };
         }
 
+        async function loadStaticExamples() {
+            const manifestUrl = new URL('examples/manifest.json', window.location.href).href;
+            const response = await fetch(manifestUrl, { cache: 'no-store' });
+            if (!response.ok) {
+                return [];
+            }
+
+            const manifest = await response.json();
+            const items = Array.isArray(manifest.examples) ? manifest.examples : [];
+            return items
+                .filter((entry) => entry && typeof entry.name === 'string' && typeof entry.path === 'string')
+                .map((entry) => ({
+                    name: entry.name,
+                    path: entry.path,
+                    staticUrl: new URL(entry.path, window.location.href).href,
+                }));
+        }
+
         function makeRemoteAdapter(wsUrl) {
             let ws = null;
             const pending = new Map();
@@ -598,6 +616,9 @@
             await adapter.connect();
             restartTimer();
             availableExamples = await adapter.listExamples().catch(() => []);
+            if (adapter.kind === 'wasm' && availableExamples.length === 0) {
+                availableExamples = await loadStaticExamples().catch(() => []);
+            }
             renderExamples();
             if (message) {
                 showMsg(message);
@@ -639,6 +660,33 @@
                 throw new Error('No active adapter');
             }
             return await adapter.command(command, args);
+        }
+
+        function extractState(body) {
+            if (!body || typeof body !== 'object') {
+                return null;
+            }
+            if (body.state && typeof body.state === 'object') {
+                return body.state;
+            }
+            if (typeof body.pc !== 'undefined' && Array.isArray(body.registers)) {
+                return body;
+            }
+            return null;
+        }
+
+        function extractEntryHex(body) {
+            if (!body || typeof body !== 'object') {
+                return null;
+            }
+            if (typeof body.entryHex === 'string') {
+                return body.entryHex;
+            }
+            const state = extractState(body);
+            if (state && typeof state.entryPoint !== 'undefined') {
+                return formatHex32(state.entryPoint);
+            }
+            return null;
         }
 
         function currentLoadedExampleName() {
@@ -694,8 +742,12 @@
                 return;
             }
             try {
+                if (adapter.kind === 'wasm' && currentSnapshot && currentSnapshot.running) {
+                    await control('tick', { quantum: 5_000 });
+                }
+
                 const body = await control('state');
-                const state = body.state;
+                const state = extractState(body);
                 if (!state) {
                     return;
                 }
@@ -728,16 +780,35 @@
         async function loadExample(path) {
             const body = await control('launch', { path });
             showMsg(`Loaded example: ${path}`);
-            if (body.entryHex) {
-                showMsg(`Loaded example: ${path} @ ${body.entryHex}`);
+            const entryHex = extractEntryHex(body);
+            if (entryHex) {
+                showMsg(`Loaded example: ${path} @ ${entryHex}`);
             }
+            await refresh();
+        }
+
+        async function loadStaticExample(example) {
+            if (!example || !example.staticUrl) {
+                throw new Error('invalid static example entry');
+            }
+
+            const response = await fetch(example.staticUrl, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`failed to fetch example ${example.name}: HTTP ${response.status}`);
+            }
+
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            const body = await control('launchBytes', { name: example.name, bytes });
+            const entryHex = extractEntryHex(body);
+            showMsg(`Loaded example: ${example.name}${entryHex ? ` @ ${entryHex}` : ''}`);
             await refresh();
         }
 
         async function loadUploadedFile(file) {
             const bytes = new Uint8Array(await file.arrayBuffer());
             const body = await control('launchBytes', { name: file.name, bytes });
-            showMsg(`Loaded binary: ${file.name}${body.entryHex ? ` @ ${body.entryHex}` : ''}`);
+            const entryHex = extractEntryHex(body);
+            showMsg(`Loaded binary: ${file.name}${entryHex ? ` @ ${entryHex}` : ''}`);
             await refresh();
         }
 
@@ -760,13 +831,19 @@
                 return;
             }
 
+            const selectedEntry = availableExamples.find((example) => example.path === selected || example.name === selected);
+
             if (!(await confirmBeforeReplacingBinary())) {
                 renderExamples();
                 return;
             }
 
             try {
-                await loadExample(selected);
+                if (selectedEntry && selectedEntry.staticUrl) {
+                    await loadStaticExample(selectedEntry);
+                } else {
+                    await loadExample(selected);
+                }
             } catch (error) {
                 showMsg(error.message || String(error), true);
                 renderExamples();
@@ -803,6 +880,7 @@
             try {
                 await control('continue');
                 showMsg('Running');
+                await refresh();
             } catch (error) {
                 showMsg(error.message || String(error), true);
             }
