@@ -68,6 +68,26 @@
             letter-spacing: 0.02em;
         }
 
+        .title-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .repo-link {
+            color: #8a2f18;
+            font-weight: 700;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            white-space: nowrap;
+        }
+
+        .repo-link:hover {
+            color: #bf3a16;
+        }
+
         h2 {
             margin: 0 0 10px;
             font-size: 1rem;
@@ -209,6 +229,25 @@
             display: none !important;
         }
 
+        .resource-links {
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .resource-links li {
+            margin-bottom: 6px;
+        }
+
+        .resource-links a {
+            color: #8a2f18;
+            font-weight: 600;
+            text-underline-offset: 2px;
+        }
+
+        .resource-links a:hover {
+            color: #bf3a16;
+        }
+
         @media (max-width: 980px) {
             .layout {
                 grid-template-columns: 1fr;
@@ -219,7 +258,11 @@
 
 <body>
     <div class="card" style="margin-bottom:14px;">
-        <h1>Hecate VM Debug Console <span id="status-pill" class="status paused">Paused</span></h1>
+        <div class="title-row">
+            <h1>Hecate VM Debug Console <span id="status-pill" class="status paused">Paused</span></h1>
+            <a class="repo-link" href="https://github.com/hecate-vm/hecate-vm" target="_blank"
+                rel="noopener noreferrer">Source Code</a>
+        </div>
     </div>
 
     <div class="layout">
@@ -319,6 +362,18 @@
                 placeholder="Program output will appear here"></textarea>
             <button id="btn-clear-io">Clear</button>
         </div>
+    </section>
+
+    <section class="card io-panel">
+        <h2>Resources</h2>
+        <ul class="resource-links" id="resource-links">
+            <li><a href="http://ithare.com/infographics-operation-costs-in-cpu-clock-cycles/" target="_blank"
+                    rel="noopener noreferrer">IT Hare: Infographics: Operation Costs in CPU Clock Cycles</a></li>
+            <li><a href="https://projectf.io/posts/riscv-cheat-sheet/" target="_blank" rel="noopener noreferrer">RISC-V
+                    Cheat Sheet (Project F)</a></li>
+            <li><a href="https://riscv.org/technical/specifications/" target="_blank" rel="noopener noreferrer">RISC-V
+                    Specifications</a></li>
+        </ul>
     </section>
 
     <script>
