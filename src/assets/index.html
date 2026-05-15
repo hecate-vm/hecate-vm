@@ -427,6 +427,85 @@
             "counters": ["rdcycle", "rdcycleh", "rdtime", "rdtimeh", "rdinstret", "rdinstreth"],
             "misc-instructions": ["ebreak", "ecall", "fence", "mv", "nop"]
         };
+        const tooltips = {
+            instructions: {
+                "add": "Add",
+                "addi": "Add Immediate",
+                "neg": "Negate",
+                "sub": "Subtract",
+                "mul": "Multiply",
+                "mulh": "Multiply High",
+                "mulhu": "Multiply High Unsigned",
+                "mulhsu": "Multiply High Signed Unsigned",
+                "div": "Divide",
+                "rem": "Remainder",
+                "and": "AND",
+                "andi": "AND Immediate",
+                "not": "NOT",
+                "or": "OR",
+                "ori": "OR Immediate",
+                "xor": "XOR",
+                "xori": "XOR Immediate",
+                "sll": "Shift Left Logical",
+                "slli": "Shift Left Logical Immediate",
+                "srl": "Shift Right Logical",
+                "srli": "Shift Right Logical Immediate",
+                "sra": "Shift Right Arithmetic",
+                "srai": "Shift Right Arithmetic Immediate",
+                "li": "Load Immediate",
+                "lui": "Load Upper Immediate",
+                "auipc": "Add Upper Immediate to PC",
+                "lw": "Load Word",
+                "lh": "Load Half",
+                "lhu": "Load Half Unsigned",
+                "lb": "Load Byte",
+                "lbu": "Load Byte Unsigned",
+                "la": "Load Symbol Address",
+                "sw": "Store Word",
+                "sh": "Store Half",
+                "sb": "Store Byte",
+                "j": "Jump",
+                "jal": "Jump and Link",
+                "jalr": "Jump and Link Register",
+                "call": "Call Function",
+                "ret": "Return from Function",
+                "beq": "Branch Equal",
+                "beqz": "Branch Equal Zero",
+                "bne": "Branch Not Equal",
+                "bnez": "Branch Not Equal Zero",
+                "blt": "Branch Less Than",
+                "bltu": "Branch Less Than Unsigned",
+                "bltz": "Branch Less Than Zero",
+                "bgt": "Branch Greater Than",
+                "bgtu": "Branch Greater Than Unsigned",
+                "bgtz": "Branch Greater Than Zero",
+                "ble": "Branch Less or Equal",
+                "bleu": "Branch Less or Equal Unsigned",
+                "blez": "Branch Less or Equal Zero",
+                "bge": "Branch Greater or Equal",
+                "bgeu": "Branch Greater or Equal Unsigned",
+                "bgez": "Branch Greater or Equal Zero",
+                "slt": "Set Less Than",
+                "slti": "Set Less Than Immediate",
+                "sltu": "Set Less Than Unsigned",
+                "sltiu": "Set Less Than Immediate Unsigned",
+                "seqz": "Set Equal Zero",
+                "snez": "Set Not Equal Zero",
+                "sltz": "Set Less Than Zero",
+                "sgtz": "Set Greater Than Zero",
+                "rdcycle": "CPU Cycle Count",
+                "rdcycleh": "CPU Cycle Count High",
+                "rdtime": "Current Time",
+                "rdtimeh": "Current Time High",
+                "rdinstret": "CPU Instructions Retired",
+                "rdinstreth": "CPU Instructions Retired High",
+                "ebreak": "Environment Break (Debugger Call)",
+                "ecall": "Environment Call (OS Function)",
+                "fence": "I/O Ordering",
+                "mv": "Copy Register",
+                "nop": "No Operation"
+            }
+        }
 
         let seq = 1;
         let timer = null;
@@ -487,6 +566,14 @@
             return `https://duckduckgo.com/?q=${encodeURIComponent(`RISC-V ${mnemonic} instruction`)}`;
         }
 
+        function tooltipForMnemonic(mnemonic) {
+            if (!tooltips || !tooltips.instructions) {
+                return '';
+            }
+            const key = String(mnemonic || '').toLowerCase();
+            return tooltips.instructions[key] || '';
+        }
+
         function renderInstructionWithLink(rawInstruction) {
             const container = document.getElementById('instr');
             const text = String(rawInstruction || 'N/A').trim();
@@ -506,6 +593,7 @@
 
             const mnemonic = match[1];
             const rest = match[2] || '';
+            const tooltip = tooltipForMnemonic(mnemonic);
 
             const link = document.createElement('a');
             link.className = 'mnemonic-link';
@@ -513,16 +601,26 @@
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.textContent = mnemonic;
+            if (tooltip) {
+                link.title = tooltip;
+                link.setAttribute('aria-label', `${mnemonic}: ${tooltip}`);
+            }
             container.appendChild(link);
             container.appendChild(document.createTextNode(rest));
         }
 
         function renderRegs(regs, pc) {
+            const columns = 3;
+            const spacing = '    ';
             let out = '';
             for (let i = 0; i < regs.length; i++) {
                 const name = 'x' + String(i).padStart(2, '0');
                 const v = (regs[i] >>> 0).toString(16).padStart(8, '0');
-                out += `${name}: 0x${v}${i % 2 ? '\n' : '    '}`;
+                const isEndOfRow = (i % columns) === (columns - 1);
+                out += `${name}: 0x${v}${isEndOfRow ? '\n' : spacing}`;
+            }
+            if (regs.length % columns !== 0) {
+                out += '\n';
             }
             out += `\npc: 0x${(pc >>> 0).toString(16).padStart(8, '0')}`;
             return out;
