@@ -248,6 +248,46 @@
             color: #bf3a16;
         }
 
+        .tooltip-anchor {
+            position: relative;
+            display: inline-block;
+        }
+
+        .hover-help {
+            border-bottom: 1px dotted #b38165;
+            cursor: help;
+            display: inline-block;
+        }
+
+        .hover-help-tooltip {
+            position: absolute;
+            left: 0;
+            bottom: calc(100% + 6px);
+            width: min(360px, 70vw);
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid #d8c8b5;
+            background: #2c2621;
+            color: #fff7e8;
+            font-family: var(--display);
+            font-size: 0.82rem;
+            line-height: 1.35;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(4px);
+            transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        .tooltip-anchor:hover .hover-help-tooltip,
+        .tooltip-anchor:focus-within .hover-help-tooltip {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
         @media (max-width: 980px) {
             .layout {
                 grid-template-columns: 1fr;
@@ -285,15 +325,9 @@
                 <button id="btn-unload">Unload</button>
             </div>
 
-            <div class="row">
-                <div>
-                    <label class="muted" for="step-count">Step count</label>
-                    <input id="step-count" value="1" />
-                </div>
-                <div>
-                    <label class="muted" for="refresh-ms">Refresh ms</label>
-                    <input id="refresh-ms" value="250" />
-                </div>
+            <div style="margin-top:8px;">
+                <label class="muted" for="step-count">Step count</label>
+                <input id="step-count" value="1" />
             </div>
 
             <div style="margin-top:10px;" class="mono" id="msg"></div>
@@ -349,6 +383,10 @@
                 <div>Syscalls</div>
                 <div id="syscalls" class="mono"></div>
             </div>
+            <div class="kv">
+                <div>Memory Storage</div>
+                <div id="memory-storage" class="mono"></div>
+            </div>
 
             <h2 style="margin-top:14px;">Registers</h2>
             <pre id="regs"></pre>
@@ -398,6 +436,7 @@
         let lastExamplesSignature = null;
         let ioClearBase = 0;
         const LOCAL_WS_URL = 'ws://127.0.0.1:8582';
+        const WASM_REFRESH_INTERVAL_MS = 250;
 
         function formatHex32(value) {
             return `0x${(Number(value || 0) >>> 0).toString(16).padStart(8, '0')}`;
@@ -489,6 +528,13 @@
             return out;
         }
 
+        function setTextIfChanged(id, text) {
+            const el = document.getElementById(id);
+            if (el.textContent !== text) {
+                el.textContent = text;
+            }
+        }
+
         function renderIoOutput(state) {
             const el = document.getElementById('io-output');
             const messages = state ? state.ioOutput : '';
@@ -537,8 +583,150 @@
             document.getElementById('cycles').textContent = '';
             document.getElementById('instret').textContent = '';
             document.getElementById('syscalls').textContent = '';
+            document.getElementById('memory-storage').textContent = '';
             document.getElementById('regs').textContent = '';
             document.getElementById('io-output').value = '';
+        }
+
+        function formatBytesHuman(bytes) {
+            const value = Number(bytes);
+            if (!Number.isFinite(value) || value < 0) {
+                return String(bytes);
+            }
+            if (value >= 1024 * 1024) {
+                return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+            }
+            if (value >= 1024) {
+                return `${(value / 1024).toFixed(1)} KiB`;
+            }
+            return `${value} B`;
+        }
+
+        function memoryStorageInfo(memoryStorage) {
+            if (!memoryStorage) {
+                return {
+                    kindLabel: 'unknown',
+                    detail: '',
+                    tooltip: 'The VM memory backend is not reported by the runtime state.',
+                };
+            }
+
+            if (typeof memoryStorage === 'string') {
+                const lowered = memoryStorage.toLowerCase();
+                if (lowered === 'sparse') {
+                    return {
+                        kindLabel: 'Sparse',
+                        detail: '',
+                        tooltip: 'Sparse byte map: stores only touched addresses; lowest memory use, highest lookup overhead.',
+                    };
+                }
+                if (lowered === 'pages') {
+                    return {
+                        kindLabel: 'Pages',
+                        detail: '',
+                        tooltip: 'Paged memory: allocates fixed-size pages on demand for better locality and faster lookup.',
+                    };
+                }
+                if (lowered === 'static') {
+                    return {
+                        kindLabel: 'Static',
+                        detail: '',
+                        tooltip: 'Static contiguous memory: pre-allocated upfront for fastest direct indexing.',
+                    };
+                }
+            }
+
+            const kind = String(memoryStorage.kind || '').toLowerCase();
+            if (kind === 'sparse') {
+                return {
+                    kindLabel: 'Sparse',
+                    detail: '',
+                    tooltip: 'Sparse byte map: stores only touched addresses; lowest memory use, highest lookup overhead.',
+                };
+            }
+
+            if (kind === 'pages') {
+                const pageSize = Number(memoryStorage.pageSize);
+                return {
+                    kindLabel: `Pages (Page Size: ${formatBytesHuman(pageSize)})`,
+                    detail: '',
+                    tooltip: 'Paged memory: allocates fixed-size pages on demand for better locality and faster lookup.',
+                };
+            }
+
+            if (kind === 'static') {
+                const size = Number(memoryStorage.size);
+                return {
+                    kindLabel: `Static (Size: ${formatBytesHuman(size)})`,
+                    detail: '',
+                    tooltip: 'Static contiguous memory: pre-allocated upfront for fastest direct indexing.',
+                };
+            }
+
+            return {
+                kindLabel: kind || 'unknown',
+                detail: '',
+                tooltip: 'The VM memory backend reported by the runtime state.',
+            };
+        }
+
+        function renderMemoryStorage(memoryStorage) {
+            const el = document.getElementById('memory-storage');
+            const info = memoryStorageInfo(memoryStorage);
+            const kindEscaped = info.kindLabel
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;');
+            const tooltipEscaped = info.tooltip
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;');
+            const detail = info.detail ? ` (${info.detail})` : '';
+            const detailEscaped = detail
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;');
+
+            el.innerHTML = `<span class="tooltip-anchor"><span class="hover-help" tabindex="0">${kindEscaped}</span><span class="hover-help-tooltip" role="tooltip">${tooltipEscaped}</span></span>${detailEscaped}`;
+        }
+
+        function renderState(state) {
+            if (!state || typeof state !== 'object') {
+                return;
+            }
+
+            const previous = currentSnapshot;
+            currentSnapshot = state;
+
+            updateStatusPill(!!state.running);
+            setTextIfChanged('pc', formatHex32(state.pc));
+            setTextIfChanged('entry', formatHex32(state.entryPoint));
+            setTextIfChanged('loaded', state.loadedBinaryName || '(none)');
+            setTextIfChanged('stop', formatStopReason(state.stopReason));
+
+            const nextInstruction = (state.currentInstruction && state.currentInstruction.text) || '';
+            const prevInstruction =
+                (previous && previous.currentInstruction && previous.currentInstruction.text) || '';
+            if (nextInstruction !== prevInstruction) {
+                renderInstructionWithLink(nextInstruction);
+            }
+
+            setTextIfChanged('cycles', String(state.stats.cycles));
+            setTextIfChanged('instret', String(state.stats.instret));
+            setTextIfChanged('syscalls', String(state.stats.syscallCount));
+
+            const previousStorage = previous ? JSON.stringify(previous.memoryStorage || null) : '';
+            const nextStorage = JSON.stringify(state.memoryStorage || null);
+            if (nextStorage !== previousStorage) {
+                renderMemoryStorage(state.memoryStorage);
+            }
+
+            const regsText = renderRegs(state.registers, state.pc);
+            setTextIfChanged('regs', regsText);
+
+            renderIoOutput(state);
+            renderExamples();
         }
 
         function isPagesSite() {
@@ -608,6 +796,7 @@
             let ws = null;
             const pending = new Map();
             let disconnectRequested = false;
+            let stateListener = null;
 
             async function connect() {
                 disconnectRequested = false;
@@ -629,6 +818,15 @@
                             } catch (error) {
                                 return;
                             }
+
+                            if (data && data.type === 'event' && data.event === 'state') {
+                                const state = extractState(data.body);
+                                if (state && typeof stateListener === 'function') {
+                                    stateListener(state);
+                                }
+                                return;
+                            }
+
                             const id = data.id ?? data.seq;
                             if (!pending.has(id)) {
                                 return;
@@ -694,6 +892,9 @@
                     const body = await command('examples');
                     return body.examples || [];
                 },
+                setStateListener(listener) {
+                    stateListener = typeof listener === 'function' ? listener : null;
+                },
             };
         }
 
@@ -736,6 +937,9 @@
                 adapter.disconnect();
             }
             adapter = nextAdapter;
+            if (typeof adapter.setStateListener === 'function') {
+                adapter.setStateListener(renderState);
+            }
             await adapter.connect();
             restartTimer();
             availableExamples = await adapter.listExamples().catch(() => []);
@@ -871,20 +1075,7 @@
                 if (!state) {
                     return;
                 }
-
-                currentSnapshot = state;
-                updateStatusPill(!!state.running);
-                document.getElementById('pc').textContent = formatHex32(state.pc);
-                document.getElementById('entry').textContent = formatHex32(state.entryPoint);
-                document.getElementById('loaded').textContent = state.loadedBinaryName || '(none)';
-                document.getElementById('stop').textContent = formatStopReason(state.stopReason);
-                renderInstructionWithLink(state.currentInstruction && state.currentInstruction.text);
-                document.getElementById('cycles').textContent = String(state.stats.cycles);
-                document.getElementById('instret').textContent = String(state.stats.instret);
-                document.getElementById('syscalls').textContent = String(state.stats.syscall_count);
-                document.getElementById('regs').textContent = renderRegs(state.registers, state.pc);
-                renderIoOutput(state);
-                renderExamples();
+                renderState(state);
             } catch (error) {
                 showMsg(error, true);
             }
@@ -893,9 +1084,12 @@
         function restartTimer() {
             if (timer) {
                 clearInterval(timer);
+                timer = null;
             }
-            const ms = Math.max(50, parseMaybeHex(document.getElementById('refresh-ms').value) || 250);
-            timer = setInterval(refresh, ms);
+            if (!adapter || adapter.kind !== 'wasm') {
+                return;
+            }
+            timer = setInterval(refresh, WASM_REFRESH_INTERVAL_MS);
         }
 
         async function loadExample(name) {
@@ -905,7 +1099,12 @@
             if (entryHex) {
                 showMsg(`Loaded example: ${name} @ ${entryHex}`);
             }
-            await refresh();
+            const state = extractState(body);
+            if (state) {
+                renderState(state);
+            } else if (adapter && adapter.kind === 'wasm') {
+                await refresh();
+            }
         }
 
         async function loadUploadedFile(file) {
@@ -913,7 +1112,12 @@
             const body = await control('load', { name: file.name, bytesBase64: bytesToBase64(bytes) });
             const entryHex = extractEntryHex(body);
             showMsg(`Loaded binary: ${file.name}${entryHex ? ` @ ${entryHex}` : ''}`);
-            await refresh();
+            const state = extractState(body);
+            if (state) {
+                renderState(state);
+            } else if (adapter && adapter.kind === 'wasm') {
+                await refresh();
+            }
         }
 
         document.getElementById('example-select').addEventListener('change', async (event) => {
@@ -965,7 +1169,9 @@
             try {
                 await control('run');
                 showMsg('Running');
-                await refresh();
+                if (adapter && adapter.kind === 'wasm') {
+                    await refresh();
+                }
             } catch (error) {
                 showMsg(error, true);
             }
@@ -973,9 +1179,14 @@
 
         document.getElementById('btn-pause').addEventListener('click', async () => {
             try {
-                await control('pause');
+                const body = await control('pause');
                 showMsg('Paused');
-                await refresh();
+                const state = extractState(body);
+                if (state) {
+                    renderState(state);
+                } else if (adapter && adapter.kind === 'wasm') {
+                    await refresh();
+                }
             } catch (error) {
                 showMsg(error, true);
             }
@@ -984,8 +1195,13 @@
         document.getElementById('btn-step').addEventListener('click', async () => {
             try {
                 const count = Math.max(1, parseMaybeHex(document.getElementById('step-count').value) || 1);
-                await control('step', { count });
-                await refresh();
+                const body = await control('step', { count });
+                const state = extractState(body);
+                if (state) {
+                    renderState(state);
+                } else if (adapter && adapter.kind === 'wasm') {
+                    await refresh();
+                }
             } catch (error) {
                 showMsg(error, true);
             }
@@ -993,9 +1209,14 @@
 
         document.getElementById('btn-reset').addEventListener('click', async () => {
             try {
-                await control('reset');
+                const body = await control('reset');
                 showMsg('Reset complete');
-                await refresh();
+                const state = extractState(body);
+                if (state) {
+                    renderState(state);
+                } else if (adapter && adapter.kind === 'wasm') {
+                    await refresh();
+                }
             } catch (error) {
                 showMsg(error, true);
             }
@@ -1005,7 +1226,9 @@
             try {
                 await control('unload');
                 showMsg('Unload complete');
-                await refresh();
+                if (adapter && adapter.kind === 'wasm') {
+                    await refresh();
+                }
             } catch (error) {
                 showMsg(error, true);
             }
@@ -1040,8 +1263,6 @@
             ioClearBase = output.length;
             document.getElementById('io-output').value = '';
         });
-
-        document.getElementById('refresh-ms').addEventListener('change', restartTimer);
 
         async function boot() {
             showMsg('UI ready. Connecting to the local VM...');

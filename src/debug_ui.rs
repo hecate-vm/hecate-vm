@@ -1,7 +1,9 @@
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use base64::Engine as _;
@@ -275,6 +277,7 @@ fn state_reply_from_snapshot(state: crate::vm::VmState) -> anyhow::Result<VmRepl
 
 fn worker_loop(
     rx: Receiver<Envelope>,
+    event_tx: Sender<String>,
     initial_path: Option<PathBuf>,
     options: VmRuntimeOptions,
     config: SimConfig,
@@ -282,13 +285,15 @@ fn worker_loop(
     let mut vm = HecateVm::new(options, config, IoMode::Buffer);
     if let Some(path) = initial_path {
         vm.load_file(&path)?;
+        emit_state_event(&event_tx, &vm);
     }
 
     loop {
         if vm.is_running() && !vm.is_halted() {
             vm.tick_running(5_000);
+            emit_state_event(&event_tx, &vm);
             while let Ok(env) = rx.try_recv() {
-                if handle_command(&mut vm, env)? {
+                if handle_command(&mut vm, env, &event_tx)? {
                     return Ok(());
                 }
             }
@@ -299,7 +304,7 @@ fn worker_loop(
             Ok(env) => env,
             Err(_) => break,
         };
-        if handle_command(&mut vm, env)? {
+        if handle_command(&mut vm, env, &event_tx)? {
             break;
         }
     }
@@ -307,11 +312,36 @@ fn worker_loop(
     Ok(())
 }
 
-fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
+fn emit_state_event(event_tx: &Sender<String>, vm: &HecateVm) {
+    let state = match serde_json::to_value(vm.state()) {
+        Ok(state) => state,
+        Err(_) => return,
+    };
+
+    let payload = serde_json::json!({
+        "type": "event",
+        "event": "state",
+        "body": {
+            "state": state
+        }
+    })
+    .to_string();
+
+    let _ = event_tx.send(payload);
+}
+
+fn handle_command(
+    vm: &mut HecateVm,
+    env: Envelope,
+    event_tx: &Sender<String>,
+) -> anyhow::Result<bool> {
+    let mut emit_state = false;
+
     let reply = match env.cmd {
         VmCommand::Initialize => VmReply::Ack,
         VmCommand::Unload => {
             *vm = HecateVm::new(vm.options(), vm.config().clone(), vm.io_mode());
+            emit_state = true;
             VmReply::Ack
         }
         VmCommand::Examples => VmReply::Examples {
@@ -339,12 +369,18 @@ fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
             },
         },
         VmCommand::Run => match vm.run() {
-            Ok(()) => VmReply::Ack,
+            Ok(()) => {
+                emit_state = true;
+                VmReply::Ack
+            }
             Err(e) => VmReply::Error {
                 message: e.to_string(),
             },
         },
-        VmCommand::Pause => state_reply_from_snapshot(vm.pause())?,
+        VmCommand::Pause => {
+            emit_state = true;
+            state_reply_from_snapshot(vm.pause())?
+        }
         VmCommand::Step => match vm.step() {
             Ok(state) => VmReply::State {
                 state: serde_json::to_value(state)
@@ -420,6 +456,14 @@ fn handle_command(vm: &mut HecateVm, env: Envelope) -> anyhow::Result<bool> {
             return Ok(true);
         }
     };
+
+    if matches!(reply, VmReply::Loaded { .. } | VmReply::State { .. }) {
+        emit_state = true;
+    }
+
+    if emit_state {
+        emit_state_event(event_tx, vm);
+    }
 
     let _ = env.tx.send(reply);
     Ok(false)
@@ -618,12 +662,38 @@ fn handle_control_request(mut request: Request, tx: &Sender<Envelope>) {
     );
 }
 
-fn handle_ws_client(stream: TcpStream, tx: Sender<Envelope>) -> anyhow::Result<()> {
+fn handle_ws_client(
+    stream: TcpStream,
+    tx: Sender<Envelope>,
+    event_rx: Receiver<String>,
+) -> anyhow::Result<()> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(80)))
+        .context("failed to configure websocket read timeout")?;
     let mut socket = accept(stream).context("websocket handshake failed")?;
 
     loop {
+        loop {
+            match event_rx.try_recv() {
+                Ok(payload) => {
+                    socket.send(Message::Text(payload))?;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return Ok(()),
+            }
+        }
+
         let message = match socket.read() {
             Ok(msg) => msg,
+            Err(tungstenite::Error::Io(err))
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
+                break;
+            }
             Err(_) => break,
         };
 
@@ -666,16 +736,37 @@ fn handle_ws_client(stream: TcpStream, tx: Sender<Envelope>) -> anyhow::Result<(
     Ok(())
 }
 
-fn run_ws_server(bind_addr: String, tx: Sender<Envelope>) -> anyhow::Result<()> {
+fn run_ws_server(
+    bind_addr: String,
+    tx: Sender<Envelope>,
+    event_rx: Receiver<String>,
+) -> anyhow::Result<()> {
     let listener = TcpListener::bind(&bind_addr)
         .map_err(|e| anyhow!("Failed to bind websocket server at {bind_addr}: {e}"))?;
+
+    let subscribers: Arc<Mutex<Vec<Sender<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let broadcast_subscribers = Arc::clone(&subscribers);
+    thread::spawn(move || {
+        while let Ok(payload) = event_rx.recv() {
+            let mut guard = match broadcast_subscribers.lock() {
+                Ok(guard) => guard,
+                Err(_) => break,
+            };
+
+            guard.retain(|subscriber| subscriber.send(payload.clone()).is_ok());
+        }
+    });
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let tx_clone = tx.clone();
+                let (client_event_tx, client_event_rx) = channel::<String>();
+                if let Ok(mut guard) = subscribers.lock() {
+                    guard.push(client_event_tx);
+                }
                 thread::spawn(move || {
-                    if let Err(err) = handle_ws_client(stream, tx_clone) {
+                    if let Err(err) = handle_ws_client(stream, tx_clone, client_event_rx) {
                         eprintln!("Websocket client error: {err}");
                     }
                 });
@@ -696,8 +787,9 @@ pub fn serve(
     port: u16,
 ) -> anyhow::Result<()> {
     let (tx, rx) = channel::<Envelope>();
+    let (event_tx, event_rx) = channel::<String>();
 
-    let worker = thread::spawn(move || worker_loop(rx, initial_path, options, config));
+    let worker = thread::spawn(move || worker_loop(rx, event_tx, initial_path, options, config));
 
     let bind_addr = format!("127.0.0.1:{port}");
     let ws_port = port.saturating_add(1);
@@ -708,7 +800,7 @@ pub fn serve(
 
     let ws_tx = tx.clone();
     thread::spawn(move || {
-        if let Err(err) = run_ws_server(ws_bind_addr, ws_tx) {
+        if let Err(err) = run_ws_server(ws_bind_addr, ws_tx, event_rx) {
             eprintln!("Websocket server failed: {err}");
         }
     });
@@ -822,7 +914,9 @@ mod tests {
     #[test]
     fn worker_handles_dump_and_shutdown_commands() {
         let (tx, rx) = channel::<Envelope>();
-        let worker = thread::spawn(move || worker_loop(rx, None, test_options(), test_config()));
+        let (event_tx, _event_rx) = channel::<String>();
+        let worker =
+            thread::spawn(move || worker_loop(rx, event_tx, None, test_options(), test_config()));
 
         let dump = send_command(&tx, VmCommand::Dump).expect("dump command should succeed");
         assert!(matches!(dump, VmReply::Dump { .. }));

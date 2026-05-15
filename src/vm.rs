@@ -186,11 +186,16 @@ pub struct VmRuntimeOptions {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind")]
 pub enum MemoryStorageKind {
     Sparse,
-    Pages { page_size: usize },
-    Static { size: usize },
+    Pages {
+        #[serde(rename = "pageSize")]
+        page_size: usize,
+    },
+    Static {
+        size: usize,
+    },
 }
 
 impl Default for MemoryStorageKind {
@@ -321,7 +326,7 @@ pub struct LoadedBinary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VmState {
-    pub memory_kind: MemoryStorageKind,
+    pub memory_storage: MemoryStorageKind,
     pub running: bool,
     pub halted: bool,
     pub pc: u32,
@@ -1344,7 +1349,7 @@ impl HecateVm {
 
     pub fn state(&self) -> VmState {
         VmState {
-            memory_kind: self.options.memory_storage,
+            memory_storage: self.options.memory_storage,
             running: self.running,
             halted: self.halted,
             pc: self.state.pc,
