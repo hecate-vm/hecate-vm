@@ -8,13 +8,13 @@ RUNTIME_DIR="$ROOT_DIR/runtime"
 TOOLCHAIN_DIR="$RUNTIME_DIR/cmake/toolchains"
 
 LIST_DIR="$ROOT_DIR/examples/linked_list"
-VEC_DIR="$ROOT_DIR/examples/vector_contiguous"
+VEC_DIR="$ROOT_DIR/examples/vector"
 
 WORK_DIR="$(mktemp -d)"
 LIST_BUILD="$WORK_DIR/list-build"
 VEC_BUILD="$WORK_DIR/vector-build"
 LIST_ELF="$LIST_BUILD/linked_list.elf"
-VEC_ELF="$VEC_BUILD/vector_contiguous.elf"
+VEC_ELF="$VEC_BUILD/vector.elf"
 
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -71,8 +71,8 @@ build_example() {
 echo "Building linked_list..."
 build_example "$LIST_DIR" "$LIST_BUILD" linked_list
 
-echo "Building vector_contiguous..."
-build_example "$VEC_DIR" "$VEC_BUILD" vector_contiguous
+echo "Building vector..."
+build_example "$VEC_DIR" "$VEC_BUILD" vector
 
 # ---------------------------------------------------------------------------
 # Run both through the VM and capture output
@@ -89,7 +89,7 @@ LIST_CYCLES="$(echo "$LIST_OUT" | grep "Score (cycles):" | awk '{print $NF}')"
 
 echo ""
 echo "================================================================"
-echo " Running vector_contiguous (linear vector scan)"
+echo " Running vector (linear vector scan)"
 echo "================================================================"
 VEC_OUT="$(cargo run --release --quiet -- run "$VEC_ELF" "$@" 2>&1)"
 echo "$VEC_OUT"

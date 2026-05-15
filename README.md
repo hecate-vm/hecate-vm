@@ -90,7 +90,7 @@ Example binaries are feature-gated at build time. Enable one or more of these Ca
 - `hello_world`
 - `linked_list`
 - `rust_hello`
-- `vector_contiguous`
+- `vector`
 
 When enabled, the matching example is built during compilation and embedded with `include_bytes!`.
 Only enabled examples are exposed by the local debug UI, and they are shown by filename only.
@@ -200,7 +200,7 @@ Run the examples with docker:
 docker buildx build -t hecate-vm .
 docker run --rm  hecate-vm run /examples/hello_world.elf
 docker run --rm  hecate-vm run /examples/rust_hello.elf
-docker run --rm  hecate-vm run /examples/vector_contiguous.elf
+docker run --rm  hecate-vm run /examples/vector.elf
 docker run --rm  hecate-vm run /examples/linked_list.elf
 ```
 

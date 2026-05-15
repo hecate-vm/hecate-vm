@@ -31,10 +31,10 @@ const EXAMPLES: &[ExampleSpec] = &[
         built_path: "target/hecate-rv32-build/examples-build/rust_hello/rust_hello.elf",
     },
     ExampleSpec {
-        build_name: "vector_contiguous",
-        feature_env: "CARGO_FEATURE_VECTOR_CONTIGUOUS",
-        name: "vector_contiguous.elf",
-        built_path: "target/hecate-rv32-build/examples-build/vector_contiguous/vector_contiguous.elf",
+        build_name: "vector",
+        feature_env: "CARGO_FEATURE_VECTOR",
+        name: "vector.elf",
+        built_path: "target/hecate-rv32-build/examples-build/vector/vector.elf",
     },
 ];
 

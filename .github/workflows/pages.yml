@@ -19,6 +19,8 @@ env:
   CARGO_TERM_COLOR: always
   WASM_PKG_DIR: target/wasm-pack
   SITE_DIR: site
+  ELEMENT_COUNT: 512
+  ROUNDS: 10
 
 jobs:
   build:
@@ -44,9 +46,9 @@ jobs:
 
       - name: Build sample ELFs for browser examples
         run: |
-          export HECATE_CMAKE_ARGS_LINKED_LIST="-DLINKED_LIST_NODE_COUNT=512 -DLINKED_LIST_TRAVERSAL_ROUNDS=50"
-          export HECATE_CMAKE_ARGS_VECTOR_CONTIGUOUS="-DVECTOR_CONTIGUOUS_ELEMENT_COUNT=512 -DVECTOR_CONTIGUOUS_SCAN_ROUNDS=50"
-          HECATE_EXAMPLES=hello_world,linked_list,vector_contiguous bash scripts/build_samples.sh
+          export HECATE_CMAKE_ARGS_LINKED_LIST="-DELEMENT_COUNT=${ELEMENT_COUNT} -DROUNDS=${ROUNDS}"
+          export HECATE_CMAKE_ARGS_VECTOR="-DELEMENT_COUNT=${ELEMENT_COUNT} -DROUNDS=${ROUNDS}"
+          HECATE_EXAMPLES=hello_world,linked_list,vector bash scripts/build_samples.sh
 
       - name: Build wasm package
         run: |
@@ -65,13 +67,13 @@ jobs:
           cp "${WASM_PKG_DIR}"/* "${SITE_DIR}/assets/wasm/"
           cp target/hecate-rv32-build/examples-build/hello_world/hello_world.elf "${SITE_DIR}/examples/"
           cp target/hecate-rv32-build/examples-build/linked_list/linked_list.elf "${SITE_DIR}/examples/"
-          cp target/hecate-rv32-build/examples-build/vector_contiguous/vector_contiguous.elf "${SITE_DIR}/examples/"
+          cp target/hecate-rv32-build/examples-build/vector/vector.elf "${SITE_DIR}/examples/"
           cat > "${SITE_DIR}/examples/manifest.json" <<'JSON'
           {
             "examples": [
               { "name": "hello_world.elf", "path": "examples/hello_world.elf" },
               { "name": "linked_list.elf", "path": "examples/linked_list.elf" },
-              { "name": "vector_contiguous.elf", "path": "examples/vector_contiguous.elf" }
+              { "name": "vector.elf", "path": "examples/vector.elf" }
             ]
           }
           JSON
