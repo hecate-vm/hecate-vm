@@ -8,8 +8,13 @@
 #include "hecate_runtime/stdlib.h"
 #include "hecate_runtime/syscalls.h"
 
-#define N 1024
-#define STEPS 200
+#ifndef LINKED_LIST_NODE_COUNT
+#define LINKED_LIST_NODE_COUNT 1024
+#endif
+
+#ifndef LINKED_LIST_TRAVERSAL_ROUNDS
+#define LINKED_LIST_TRAVERSAL_ROUNDS 200
+#endif
 
 struct Node {
   int value;
@@ -50,7 +55,7 @@ static void print_int(int v) {
 int main() {
   Node *head = nullptr;
 
-  for (int i = 0; i < N; i++) {
+  for (int i = 0; i < LINKED_LIST_NODE_COUNT; i++) {
     Node *n = static_cast<Node *>(malloc(sizeof(Node)));
     if (!n) {
       hecate_sys_exit(1);
@@ -74,7 +79,7 @@ int main() {
   }
 
   int acc = 0;
-  for (int step = 0; step < STEPS; step++) {
+  for (int step = 0; step < LINKED_LIST_TRAVERSAL_ROUNDS; step++) {
     Node *cur = head;
     while (cur) {
       acc += cur->value;

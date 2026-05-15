@@ -8,8 +8,13 @@
 #include "hecate_runtime/syscalls.h"
 #include "hecate_runtime/stdlib.h"
 
-#define N 1024
-#define STEPS 200
+#ifndef VECTOR_CONTIGUOUS_ELEMENT_COUNT
+#define VECTOR_CONTIGUOUS_ELEMENT_COUNT 1024
+#endif
+
+#ifndef VECTOR_CONTIGUOUS_SCAN_ROUNDS
+#define VECTOR_CONTIGUOUS_SCAN_ROUNDS 200
+#endif
 
 template <typename T> struct Vector {
   T *data;
@@ -62,13 +67,13 @@ static void print_int(int v) {
 
 int main() {
   Vector<int> values;
-  for (int i = 0; i < N; i++) {
+  for (int i = 0; i < VECTOR_CONTIGUOUS_ELEMENT_COUNT; i++) {
     values.push_back((i * 37) + 11);
   }
 
   int acc = 0;
-  for (int step = 0; step < STEPS; step++) {
-    for (int i = 0; i < N; i++) {
+  for (int step = 0; step < VECTOR_CONTIGUOUS_SCAN_ROUNDS; step++) {
+    for (int i = 0; i < VECTOR_CONTIGUOUS_ELEMENT_COUNT; i++) {
       acc += values[i];
     }
   }

@@ -95,12 +95,31 @@ build_cmake_example() {
   local example_dir="$1"
   local example_name="$2"
   local example_build_dir="$BUILD_ROOT/$example_name"
+  local example_var_name
+  local example_args_var
+  local -a cmake_args
+
+  example_var_name="$(echo "$example_name" | tr '[:lower:]-' '[:upper:]_')"
+  example_args_var="HECATE_CMAKE_ARGS_${example_var_name}"
+
+  cmake_args=(
+    -S "$example_dir"
+    -B "$example_build_dir"
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE"
+  )
+
+  if [[ -n "${HECATE_CMAKE_ARGS:-}" ]]; then
+    # shellcheck disable=SC2206
+    cmake_args+=( ${HECATE_CMAKE_ARGS} )
+  fi
+
+  if [[ -n "${!example_args_var:-}" ]]; then
+    # shellcheck disable=SC2206
+    cmake_args+=( ${!example_args_var} )
+  fi
 
   echo "Configuring C/C++ example: $example_name"
-  cmake \
-    -S "$example_dir" \
-    -B "$example_build_dir" \
-    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE"
+  cmake "${cmake_args[@]}"
 
   echo "Building C/C++ example: $example_name"
   cmake --build "$example_build_dir"

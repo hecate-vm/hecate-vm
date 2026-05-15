@@ -44,6 +44,8 @@ jobs:
 
       - name: Build sample ELFs for browser examples
         run: |
+          export HECATE_CMAKE_ARGS_LINKED_LIST="-DLINKED_LIST_NODE_COUNT=512 -DLINKED_LIST_TRAVERSAL_ROUNDS=50"
+          export HECATE_CMAKE_ARGS_VECTOR_CONTIGUOUS="-DVECTOR_CONTIGUOUS_ELEMENT_COUNT=512 -DVECTOR_CONTIGUOUS_SCAN_ROUNDS=50"
           HECATE_EXAMPLES=hello_world,linked_list,vector_contiguous bash scripts/build_samples.sh
 
       - name: Build wasm package
