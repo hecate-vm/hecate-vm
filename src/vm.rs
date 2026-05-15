@@ -41,17 +41,18 @@ pub struct RunStats {
     pub io_cycles: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LatencyConfigRaw {
     pub l1: Option<u64>,
     pub l2: Option<u64>,
     pub l3: Option<u64>,
-    pub memory: Option<u64>,
+    pub load: Option<u64>,
     pub store: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimConfigRaw {
+    pub memory: Option<MemoryKindRaw>,
     pub default_syscall_cycles: Option<u64>,
     pub io_cycles_per_byte: Option<u64>,
     #[serde(default)]
@@ -63,13 +64,14 @@ pub struct SimConfigRaw {
 impl SimConfigRaw {
     pub fn merge_with(self, user: SimConfigRaw) -> SimConfigRaw {
         SimConfigRaw {
+            memory: user.memory.clone().or(self.memory),
             default_syscall_cycles: user.default_syscall_cycles.or(self.default_syscall_cycles),
             io_cycles_per_byte: user.io_cycles_per_byte.or(self.io_cycles_per_byte),
             latency: LatencyConfigRaw {
                 l1: user.latency.l1.or(self.latency.l1),
                 l2: user.latency.l2.or(self.latency.l2),
                 l3: user.latency.l3.or(self.latency.l3),
-                memory: user.latency.memory.or(self.latency.memory),
+                load: user.latency.load.or(self.latency.load),
                 store: user.latency.store.or(self.latency.store),
             },
             syscall_cycles: {
@@ -92,12 +94,13 @@ impl SimConfigRaw {
             .collect::<anyhow::Result<HashMap<u32, u64>>>()?;
 
         Ok(SimConfig {
+            memory: self.memory.unwrap_or_default().into(),
             default_syscall_cycles: self.default_syscall_cycles.unwrap_or(500),
             io_cycles_per_byte: self.io_cycles_per_byte.unwrap_or(20),
             l1_latency: self.latency.l1.unwrap_or(3),
             l2_latency: self.latency.l2.unwrap_or(11),
             l3_latency: self.latency.l3.unwrap_or(50),
-            memory_latency: self.latency.memory.unwrap_or(125),
+            load_latency: self.latency.load.unwrap_or(125),
             store_latency: self.latency.store.unwrap_or(1),
             syscall_cycles,
         })
@@ -105,13 +108,52 @@ impl SimConfigRaw {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum MemoryKindRaw {
+    Sparse,
+    Pages { page_size: Option<usize> },
+    Static { size: Option<usize> },
+}
+
+impl Default for MemoryKindRaw {
+    fn default() -> Self {
+        Self::Pages { page_size: None }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MemoryKind {
+    Sparse,
+    Pages { page_size: usize },
+    Static { size: usize },
+}
+
+impl From<MemoryKindRaw> for MemoryKind {
+    fn from(raw: MemoryKindRaw) -> Self {
+        match raw {
+            MemoryKindRaw::Sparse => Self::Sparse,
+            MemoryKindRaw::Pages { page_size } => Self::Pages {
+                page_size: page_size.unwrap_or(4096).max(1).min(u32::MAX as usize),
+            },
+            MemoryKindRaw::Static { size } => Self::Static {
+                size: size
+                    .unwrap_or(200 * 1024 * 1024)
+                    .max(1)
+                    .min(u32::MAX as usize),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimConfig {
+    pub memory: MemoryKind,
     pub default_syscall_cycles: u64,
     pub io_cycles_per_byte: u64,
     pub l1_latency: u64,
     pub l2_latency: u64,
     pub l3_latency: u64,
-    pub memory_latency: u64,
+    pub load_latency: u64,
     pub store_latency: u64,
     pub syscall_cycles: HashMap<u32, u64>,
 }
@@ -139,6 +181,36 @@ pub struct VmRuntimeOptions {
     pub l2_size: u32,
     pub l3_size: u32,
     pub max_instructions: Option<u64>,
+    #[serde(default)]
+    pub memory_storage: MemoryStorageKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MemoryStorageKind {
+    Sparse,
+    Pages { page_size: usize },
+    Static { size: usize },
+}
+
+impl Default for MemoryStorageKind {
+    fn default() -> Self {
+        Self::Sparse
+    }
+}
+
+impl MemoryStorageKind {
+    fn normalized(self) -> Self {
+        match self {
+            Self::Sparse => Self::Sparse,
+            Self::Pages { page_size } => Self::Pages {
+                page_size: page_size.max(1).min(u32::MAX as usize),
+            },
+            Self::Static { size } => Self::Static {
+                size: size.max(1).min(u32::MAX as usize),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -249,6 +321,7 @@ pub struct LoadedBinary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VmState {
+    pub memory_kind: MemoryStorageKind,
     pub running: bool,
     pub halted: bool,
     pub pc: u32,
@@ -355,7 +428,7 @@ pub struct CacheHierarchy {
     l1_latency: u64,
     l2_latency: u64,
     l3_latency: u64,
-    memory_latency: u64,
+    load_latency: u64,
     store_latency: u64,
 }
 
@@ -371,7 +444,7 @@ impl CacheHierarchy {
             l1_latency: config.l1_latency,
             l2_latency: config.l2_latency,
             l3_latency: config.l3_latency,
-            memory_latency: config.memory_latency,
+            load_latency: config.load_latency,
             store_latency: config.store_latency,
         }
     }
@@ -413,7 +486,7 @@ impl CacheHierarchy {
         self.l3.insert(line);
         self.l2.insert(line);
         l1.insert(line);
-        self.memory_latency
+        self.load_latency
     }
 
     fn store_cost(&mut self, addr: u32) -> u64 {
@@ -431,9 +504,178 @@ pub enum IoMode {
     Buffer,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PageMemoryBlock {
+    data: Box<[u8]>,
+    mapped: Box<[u8]>,
+}
+
+impl PageMemoryBlock {
+    fn new(page_size: usize) -> Self {
+        Self {
+            data: vec![0; page_size].into_boxed_slice(),
+            mapped: vec![0; page_size].into_boxed_slice(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum MemoryStorage {
+    Sparse {
+        bytes: HashMap<u32, u8>,
+    },
+    Pages {
+        page_size: usize,
+        pages: HashMap<u32, PageMemoryBlock>,
+    },
+    Static {
+        bytes: Box<[u8]>,
+        mapped: Box<[u8]>,
+    },
+}
+
+impl MemoryStorage {
+    fn new(kind: MemoryStorageKind) -> Self {
+        match kind.normalized() {
+            MemoryStorageKind::Sparse => Self::Sparse {
+                bytes: HashMap::new(),
+            },
+            MemoryStorageKind::Pages { page_size } => Self::Pages {
+                page_size,
+                pages: HashMap::new(),
+            },
+            MemoryStorageKind::Static { size } => Self::Static {
+                bytes: vec![0; size].into_boxed_slice(),
+                mapped: vec![0; size].into_boxed_slice(),
+            },
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            Self::Sparse { bytes } => bytes.clear(),
+            Self::Pages { pages, .. } => pages.clear(),
+            Self::Static { bytes, mapped } => {
+                bytes.fill(0);
+                mapped.fill(0);
+            }
+        }
+    }
+
+    fn can_write_range(&self, addr: u32, len: u32) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let Some(end) = addr.checked_add(len.saturating_sub(1)) else {
+            return false;
+        };
+
+        match self {
+            Self::Static { bytes, .. } => (end as u64) < bytes.len() as u64,
+            _ => true,
+        }
+    }
+
+    fn page_index_offset(page_size: usize, addr: u32) -> (u32, usize) {
+        let ps = page_size as u32;
+        (addr / ps, (addr % ps) as usize)
+    }
+
+    fn read_mapped_byte(&self, addr: u32) -> Option<u8> {
+        match self {
+            Self::Sparse { bytes } => bytes.get(&addr).copied(),
+            Self::Pages { page_size, pages } => {
+                let (page_index, offset) = Self::page_index_offset(*page_size, addr);
+                let page = pages.get(&page_index)?;
+                if page.mapped[offset] == 0 {
+                    None
+                } else {
+                    Some(page.data[offset])
+                }
+            }
+            Self::Static { bytes, mapped } => {
+                let idx = addr as usize;
+                if idx >= bytes.len() || mapped[idx] == 0 {
+                    None
+                } else {
+                    Some(bytes[idx])
+                }
+            }
+        }
+    }
+
+    fn write_byte(&mut self, addr: u32, value: u8) -> bool {
+        match self {
+            Self::Sparse { bytes } => {
+                bytes.insert(addr, value);
+                true
+            }
+            Self::Pages { page_size, pages } => {
+                let (page_index, offset) = Self::page_index_offset(*page_size, addr);
+                let page = pages
+                    .entry(page_index)
+                    .or_insert_with(|| PageMemoryBlock::new(*page_size));
+                page.data[offset] = value;
+                page.mapped[offset] = 1;
+                true
+            }
+            Self::Static { bytes, mapped } => {
+                let idx = addr as usize;
+                if idx >= bytes.len() {
+                    return false;
+                }
+                bytes[idx] = value;
+                mapped[idx] = 1;
+                true
+            }
+        }
+    }
+
+    fn collect_dump_bytes(&self) -> HashMap<u32, u8> {
+        match self {
+            Self::Sparse { bytes } => bytes.clone(),
+            Self::Pages { page_size, pages } => {
+                let mut out = HashMap::new();
+                for (page_index, page) in pages {
+                    let page_base = (*page_index as u64) * (*page_size as u64);
+                    for (offset, marker) in page.mapped.iter().enumerate() {
+                        if *marker == 0 {
+                            continue;
+                        }
+                        let addr64 = page_base + offset as u64;
+                        if addr64 <= u32::MAX as u64 {
+                            out.insert(addr64 as u32, page.data[offset]);
+                        }
+                    }
+                }
+                out
+            }
+            Self::Static { bytes, mapped } => {
+                let mut out = HashMap::new();
+                for (idx, marker) in mapped.iter().enumerate() {
+                    if *marker == 0 {
+                        continue;
+                    }
+                    if idx <= u32::MAX as usize {
+                        out.insert(idx as u32, bytes[idx]);
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    fn load_dump_bytes(&mut self, bytes: HashMap<u32, u8>) {
+        self.clear();
+        for (addr, value) in bytes {
+            let _ = self.write_byte(addr, value);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct HecateMemory {
-    bytes: HashMap<u32, u8>,
+    storage: MemoryStorage,
     stats: Rc<RefCell<RunStats>>,
     caches: CacheHierarchy,
     bounds: Option<MemoryBounds>,
@@ -442,7 +684,7 @@ pub(crate) struct HecateMemory {
 impl HecateMemory {
     fn new(stats: Rc<RefCell<RunStats>>, options: VmRuntimeOptions, config: &SimConfig) -> Self {
         Self {
-            bytes: HashMap::new(),
+            storage: MemoryStorage::new(options.memory_storage),
             stats,
             caches: CacheHierarchy::new(options, config),
             bounds: None,
@@ -460,11 +702,14 @@ impl HecateMemory {
         caches.l1_latency = config.l1_latency;
         caches.l2_latency = config.l2_latency;
         caches.l3_latency = config.l3_latency;
-        caches.memory_latency = config.memory_latency;
+        caches.load_latency = config.load_latency;
         caches.store_latency = config.store_latency;
 
+        let mut storage = MemoryStorage::new(options.memory_storage);
+        storage.load_dump_bytes(memory.bytes);
+
         Self {
-            bytes: memory.bytes,
+            storage,
             stats,
             caches,
             bounds: memory.bounds,
@@ -476,7 +721,7 @@ impl HecateMemory {
     }
 
     fn clear_bytes(&mut self) {
-        self.bytes.clear();
+        self.storage.clear();
         self.bounds = None;
     }
 
@@ -496,18 +741,34 @@ impl HecateMemory {
         }
     }
 
-    fn write_bytes_raw(&mut self, addr: u32, data: &[u8]) {
+    fn write_bytes_raw(&mut self, addr: u32, data: &[u8]) -> bool {
+        let len = data.len() as u32;
+        if !self.storage.can_write_range(addr, len) {
+            return false;
+        }
         self.update_bounds(addr, data.len() as u32);
         for (offset, byte) in data.iter().enumerate() {
-            self.bytes.insert(addr.wrapping_add(offset as u32), *byte);
+            if !self
+                .storage
+                .write_byte(addr.wrapping_add(offset as u32), *byte)
+            {
+                return false;
+            }
         }
+        true
     }
 
-    fn zero_fill(&mut self, addr: u32, len: u32) {
+    fn zero_fill(&mut self, addr: u32, len: u32) -> bool {
+        if !self.storage.can_write_range(addr, len) {
+            return false;
+        }
         self.update_bounds(addr, len);
         for i in 0..len {
-            self.bytes.insert(addr.wrapping_add(i), 0);
+            if !self.storage.write_byte(addr.wrapping_add(i), 0) {
+                return false;
+            }
         }
+        true
     }
 
     fn zero_current_bounds(&mut self) {
@@ -516,7 +777,7 @@ impl HecateMemory {
         };
 
         for addr in bounds.start..=bounds.end {
-            self.bytes.insert(addr, 0);
+            let _ = self.storage.write_byte(addr, 0);
         }
     }
 
@@ -535,14 +796,22 @@ impl HecateMemory {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            self.bytes.insert(addr, state as u8);
+            let _ = self.storage.write_byte(addr, state as u8);
         }
+    }
+
+    fn read_mapped_byte(&self, addr: u32) -> Option<u8> {
+        self.storage.read_mapped_byte(addr)
     }
 
     fn read_program_bytes(&self, addr: u32, len: u32) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(len as usize);
         for i in 0..len {
-            bytes.push(self.bytes.get(&addr.wrapping_add(i)).copied().unwrap_or(0));
+            bytes.push(
+                self.storage
+                    .read_mapped_byte(addr.wrapping_add(i))
+                    .unwrap_or(0),
+            );
         }
         bytes
     }
@@ -633,13 +902,20 @@ impl HecateMemory {
             });
         }
 
-        self.write_bytes_raw(addr, data);
+        if !self.write_bytes_raw(addr, data) {
+            return Err(MemoryAccessError {
+                addr,
+                len,
+                bounds: Some(bounds),
+                message: "write exceeds configured memory storage capacity".to_string(),
+            });
+        }
         Ok(())
     }
 
     fn dump(&self) -> VmMemoryDump {
         VmMemoryDump {
-            bytes: self.bytes.clone(),
+            bytes: self.storage.collect_dump_bytes(),
             bounds: self.bounds,
             caches: self.caches.clone(),
         }
@@ -661,7 +937,7 @@ impl Memory for HecateMemory {
 
                 let mut raw = vec![0_u8; size as usize];
                 for i in 0..size {
-                    let Some(byte) = self.bytes.get(&addr.wrapping_add(i)).copied() else {
+                    let Some(byte) = self.read_mapped_byte(addr.wrapping_add(i)) else {
                         return false;
                     };
                     raw[i as usize] = byte;
@@ -683,7 +959,7 @@ impl Memory for HecateMemory {
 
                 let mut raw = vec![0_u8; size as usize];
                 for i in 0..size {
-                    let Some(byte) = self.bytes.get(&addr.wrapping_add(i)).copied() else {
+                    let Some(byte) = self.read_mapped_byte(addr.wrapping_add(i)) else {
                         return false;
                     };
                     raw[i as usize] = byte;
@@ -704,11 +980,17 @@ impl Memory for HecateMemory {
                 stats.cycles = stats.cycles.wrapping_add(cost);
                 drop(stats);
 
+                if !self.storage.can_write_range(addr, size) {
+                    return false;
+                }
+
                 let src = (&value as *const T).cast::<u8>();
                 self.update_bounds(addr, size);
                 for i in 0..size {
                     let byte = unsafe { *src.add(i as usize) };
-                    self.bytes.insert(addr.wrapping_add(i), byte);
+                    if !self.storage.write_byte(addr.wrapping_add(i), byte) {
+                        return false;
+                    }
                 }
                 true
             }
@@ -1062,6 +1344,7 @@ impl HecateVm {
 
     pub fn state(&self) -> VmState {
         VmState {
+            memory_kind: self.options.memory_storage,
             running: self.running,
             halted: self.halted,
             pc: self.state.pc,
@@ -1297,10 +1580,16 @@ pub(crate) fn load_elf_bytes(
         let memsz = read_u32_field(std::ptr::addr_of!(ph.memsz));
 
         let file_len = filesz.min(segment.len() as u32) as usize;
-        memory.write_bytes_raw(vaddr, &segment[..file_len]);
+        if !memory.write_bytes_raw(vaddr, &segment[..file_len]) {
+            return Err(anyhow!(
+                "ELF load failed for {label}: segment write exceeds configured memory storage"
+            ));
+        }
 
-        if memsz > filesz {
-            memory.zero_fill(vaddr.wrapping_add(filesz), memsz - filesz);
+        if memsz > filesz && !memory.zero_fill(vaddr.wrapping_add(filesz), memsz - filesz) {
+            return Err(anyhow!(
+                "ELF load failed for {label}: segment zero-fill exceeds configured memory storage"
+            ));
         }
     }
 
@@ -1470,8 +1759,8 @@ fn decode_rv32_mnemonic(inst: u32, pc: u32) -> String {
 }
 
 fn decode_instruction(memory: &HecateMemory, pc: u32) -> DecodedInstruction {
-    let b0 = memory.bytes.get(&pc).copied();
-    let b1 = memory.bytes.get(&pc.wrapping_add(1)).copied();
+    let b0 = memory.read_mapped_byte(pc);
+    let b1 = memory.read_mapped_byte(pc.wrapping_add(1));
     let (Some(b0), Some(b1)) = (b0, b1) else {
         return DecodedInstruction {
             snapshot: InstructionSnapshot {
@@ -1513,8 +1802,8 @@ fn decode_instruction(memory: &HecateMemory, pc: u32) -> DecodedInstruction {
         };
     }
 
-    let b2 = memory.bytes.get(&pc.wrapping_add(2)).copied();
-    let b3 = memory.bytes.get(&pc.wrapping_add(3)).copied();
+    let b2 = memory.read_mapped_byte(pc.wrapping_add(2));
+    let b3 = memory.read_mapped_byte(pc.wrapping_add(3));
     let (Some(b2), Some(b3)) = (b2, b3) else {
         let bytes = format!("{:02x} {:02x}", b0, b1);
         return DecodedInstruction {

@@ -5,7 +5,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::bundled_examples;
 use crate::vm::{
-    HecateVm, IoMode, MemoryReadResult, ResetMemoryPolicy, SimConfigRaw, VmDump, VmRuntimeOptions,
+    HecateVm, IoMode, MemoryReadResult, MemoryStorageKind, ResetMemoryPolicy, SimConfigRaw, VmDump,
+    VmRuntimeOptions,
 };
 
 const DEFAULT_CONFIG: &str = include_str!("default.toml");
@@ -49,6 +50,7 @@ fn default_vm() -> Result<HecateVm, JsValue> {
             l2_size: 256 * 1024,
             l3_size: 8 * 1024 * 1024,
             max_instructions: None,
+            memory_storage: MemoryStorageKind::Sparse,
         },
         config,
         IoMode::Buffer,

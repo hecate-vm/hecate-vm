@@ -762,7 +762,7 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::SimConfigRaw;
+    use crate::vm::{MemoryStorageKind, SimConfigRaw};
 
     fn test_config() -> SimConfig {
         toml::from_str::<SimConfigRaw>(include_str!("default.toml"))
@@ -778,6 +778,7 @@ mod tests {
             l2_size: 256 * 1024,
             l3_size: 8 * 1024 * 1024,
             max_instructions: None,
+            memory_storage: MemoryStorageKind::Sparse,
         }
     }
 

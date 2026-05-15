@@ -6,8 +6,8 @@ mod native_main {
     use clap::{Parser, Subcommand};
     use hecate_vm::debug_ui;
     use hecate_vm::vm::{
-        HecateVm, IoMode, SimConfig, SimConfigRaw, VmRuntimeOptions, load_config,
-        syscall_cycles_for,
+        HecateVm, IoMode, MemoryStorageKind, SimConfig, SimConfigRaw, VmRuntimeOptions,
+        load_config, syscall_cycles_for,
     };
 
     const DEFAULT_CONFIG: &str = include_str!("default.toml");
@@ -167,6 +167,7 @@ mod native_main {
                     l2_size,
                     l3_size,
                     max_instructions,
+                    memory_storage: MemoryStorageKind::Pages { page_size: 4096 },
                 };
 
                 if enable_debug_ui {

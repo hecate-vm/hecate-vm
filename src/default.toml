@@ -1,11 +1,15 @@
 default_syscall_cycles = 500
 io_cycles_per_byte = 20
 
+[memory]
+kind = "Pages"
+page_size = 4096
+
 [latency]
 l1 = 3
 l2 = 11
 l3 = 50
-memory = 125
+load = 125
 store = 1
 
 [syscall_cycles]
