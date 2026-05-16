@@ -257,6 +257,14 @@ impl HecateVmWasm {
 
         let reply = match command.as_str() {
             "initialize" => response(id, command, Value::Null),
+            "unload" => {
+                self.vm = default_vm()?;
+                response(
+                    id,
+                    command,
+                    serde_json::json!({ "state": to_json_value(&self.vm.state())? }),
+                )
+            }
             "examples" => response(
                 id,
                 command,
